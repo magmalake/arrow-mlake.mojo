@@ -1,0 +1,84 @@
+[workspace]
+authors = ["Marius S <39998+winding-lines@users.noreply.github.com>"]
+channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
+name = "arrow-mlake.mojo"
+version = "0.1.0"
+description = "The Apache Arrow memory layout and the C Data Interface, in pure Mojo — a stopgap until marrow builds on Mojo 1.x."
+preview = ["pixi-build"]
+platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
+
+[tasks]
+# Pure Mojo, no FFI and no tin dependencies — consumers just
+# `-I ../arrow-mlake.mojo/src`.
+test = { cmd = "mkdir -p build && mojo build tests/arrow_mlake_test.mojo -I src -I tests -o build/arrow-mlake-test && ./build/arrow-mlake-test" }
+
+# mojolint (lint-mojo, below): the origin and threading mistakes the compiler
+# lets through, with mojo-lsp-server behind the rules. Exit 1 on findings.
+lint = { cmd = "mojolint --lsp -I src -I tests src tests" }
+lint-tools = { cmd = "mojolint --lsp -I src tools" }
+check = { depends-on = ["test", "lint", "lint-tools"] }
+
+fmt = { cmd = "mojo format src tests tools" }
+# `mojo format` has no check mode in 1.0.0 — it rejects `--check` outright — so
+# the check is: format, then assert the tree did not move. It rewrites the
+# files as a side effect, which is what CI wants and is harmless locally; run
+# it with your own work committed or stashed.
+format-check = { cmd = "mojo format src tests tools && git diff --exit-code -- src tests tools" }
+
+# The cross-language gate. pyarrow builds the arrays, `_export_to_c` hands them
+# over, and tools/carrow_import.mojo imports them — so the producer under test
+# is one we did not write, which is the whole point: an importer checked only
+# against our own exporter proves the two agree and nothing else. The same
+# entry points re-export what they imported, so the *export* side is gated
+# here too, by pyarrow comparing what comes back with what it sent.
+# macOS wants .dylib, Linux .so; the task reads $SHLIB_EXT.
+carrow-import-lib = { cmd = "mkdir -p build && mojo build --emit shared-lib tools/carrow_import.mojo -I src -o build/libamcimport$SHLIB_EXT" }
+verify-c-import = { cmd = "bash tools/verify_c_import.sh", depends-on = ["carrow-import-lib"] }
+
+# ── pixi-build: consumable as a pixi source dependency ──────────────────────
+# Conda package name is arrow-mlake-mojo; the Mojo import is
+# `from arrow_mlake import …`.
+[package]
+name = "arrow-mlake-mojo"
+version = "0.1.0"
+
+[package.build]
+backend = { name = "pixi-build-mojo", version = "0.*" }
+
+[package.build.config.pkg]
+path = "src/arrow_mlake"
+name = "arrow_mlake"
+
+[package.host-dependencies]
+mojo-compiler = "==1.0.0"
+
+[package.build-dependencies]
+mojo-compiler = "==1.0.0"
+
+[package.run-dependencies]
+mojo-compiler = ">=1.0.0,<2"
+
+[feature.nightly.dependencies]
+modular = ">=26.6.0.dev2026082605,<27"
+
+[feature.stable.dependencies]
+mojo-compiler = "==1.0.0"
+
+[target.osx-arm64.activation.env]
+SHLIB_EXT = ".dylib"
+
+[target.linux-64.activation.env]
+SHLIB_EXT = ".so"
+
+[target.linux-aarch64.activation.env]
+SHLIB_EXT = ".so"
+
+[environments]
+default = ["nightly"]
+stable = ["stable"]
+
+[dependencies]
+# Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
+# source dependency pinned at the revision mojoshelf published, and builds
+# the `mojolint` executable into every environment next to mojo-lsp-server.
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "3fa66644756c1de7aece83e5a89375323b6e0ce7" }
