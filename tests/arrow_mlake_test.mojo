@@ -61,9 +61,11 @@ from arrow_mlake import (
     TU_NANO,
     TU_SECOND,
     ArrayArena,
+    ArrayData,
     ArrowType,
     ImportedArray,
     ImportedStream,
+    export_stream,
     RecordBatch,
     array_i64,
     array_str,
@@ -894,6 +896,104 @@ def test_arrow_array_stream_releases_what_it_never_read() raises:
     assert_true(Bool(first))
     stream.release()
     src.free_stream_storage()
+
+
+def _stream_batch(mut arena: ArrayArena, var values: List[Int64]) raises -> Int:
+    """One batch for `export_stream`: `struct<n: int64>`, non-null."""
+    var col = ArrayData(ArrowType(AT_INT64), String("n"))
+    col.nullable = False
+    col.length = len(values)
+    col.null_count = 0
+    for i in range(len(values)):
+        var v = UInt64(values[i])
+        for b in range(8):
+            col.values.append(UInt8((v >> UInt64(b * 8)) & 0xFF))
+    var ci = arena.add(col^)
+
+    var row = ArrayData(ArrowType(AT_STRUCT), String("row"))
+    row.nullable = False
+    row.length = len(values)
+    row.null_count = 0
+    row.children = [ci]
+    return arena.add(row^)
+
+
+def _three_batch_stream(mut arena: ArrayArena) raises -> Int:
+    """1..3, 4..5, 6 — uneven, so a consumer that assumed a fixed batch size
+    would be caught."""
+    var roots = List[Int]()
+    roots.append(_stream_batch(arena, [Int64(1), Int64(2), Int64(3)]))
+    roots.append(_stream_batch(arena, [Int64(4), Int64(5)]))
+    roots.append(_stream_batch(arena, [Int64(6)]))
+    return export_stream(arena, roots)
+
+
+def test_export_stream_round_trips_through_the_importer() raises:
+    """Our producer, read by our consumer, batch boundaries intact.
+
+    `pixi run verify-c-stream` is the gate that matters — it puts pyarrow on
+    the consuming end — but this runs with no Python and catches a break in
+    the same commit that causes it.
+    """
+    var arena = ArrayArena()
+    var stream = ImportedStream(_three_batch_stream(arena))
+
+    var sizes = List[Int]()
+    var total = Int64(0)
+    while True:
+        var got = stream.next()
+        if not got:
+            break
+        ref batch = got.value()
+        assert_equal(batch.num_columns(), 1)
+        sizes.append(batch.num_rows)
+        var values = batch.column_i64(0)
+        for i in range(len(values[0])):
+            total += values[0][i]
+
+    assert_equal(len(sizes), 3)
+    assert_equal(sizes[0], 3)
+    assert_equal(sizes[1], 2)
+    assert_equal(sizes[2], 1)
+    assert_equal(total, Int64(21))
+    stream.release()
+
+
+def test_export_stream_ends_with_a_released_array() raises:
+    """The end of a stream is a NULL `release`, not an error code.
+
+    A consumer that treated the end as an error would report a failed scan;
+    one that treated an error as the end would report a short one. Both are
+    silent, so the distinction is asserted rather than assumed.
+    """
+    var arena = ArrayArena()
+    var stream = ImportedStream(_three_batch_stream(arena))
+    for _ in range(3):
+        assert_true(Bool(stream.next()))
+    assert_false(Bool(stream.next()))
+    assert_false(Bool(stream.next()))
+    stream.release()
+
+
+def test_export_stream_frees_the_batches_nobody_took() raises:
+    """Abandoning a stream after one batch must not double free the rest.
+
+    `release` frees what the cursor never reached; a consumer already holds
+    what it did reach. Getting this wrong aborts the process, so the
+    assertion is that the test finishes at all.
+    """
+    var arena = ArrayArena()
+    var stream = ImportedStream(_three_batch_stream(arena))
+    assert_true(Bool(stream.next()))
+    stream.release()
+    stream.release()
+
+
+def test_export_stream_refuses_an_empty_stream() raises:
+    """No arrays means no schema, and a schemaless stream is not a stream."""
+    var arena = ArrayArena()
+    with assert_raises(contains="at least one array"):
+        _ = export_stream(arena, List[Int]())
 
 
 def main() raises:

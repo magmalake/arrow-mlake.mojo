@@ -55,3 +55,8 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           pixi run verify-c-import
+
+      - name: ArrowArrayStream into pyarrow
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          pixi run verify-c-stream
