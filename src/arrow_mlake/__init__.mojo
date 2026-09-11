@@ -123,4 +123,4 @@ from arrow_mlake.carrow_import import (
     release_c_array,
     release_c_schema,
 )
-from arrow_mlake.carrow_stream import export_stream
+from arrow_mlake.carrow_stream import export_stream, export_stream_of

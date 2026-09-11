@@ -38,7 +38,12 @@ pointing at a stack is the mistake this file exists to not make.
 from std.memory.alloc import unsafe_alloc
 
 from arrow_mlake.arrow import ArrayArena
-from arrow_mlake.carrow import CArrowArray, CArrowSchema, export_c
+from arrow_mlake.carrow import (
+    CArrowArray,
+    CArrowSchema,
+    ExportedArray,
+    export_c,
+)
 from arrow_mlake.carrow_import import (
     CArrowArrayStream,
     StreamGetLastErrorFn,
@@ -162,40 +167,37 @@ def _release(stream: _StreamPtr) abi("C") -> None:
     stream[].release = 0
 
 
-def export_stream(arena: ArrayArena, roots: List[Int]) raises -> Int:
-    """Export arrays as an `ArrowArrayStream`; returns its address.
+def export_stream_of(var exported: List[ExportedArray]) raises -> Int:
+    """Turn already-exported arrays into a stream; returns its address.
 
-    The caller hands the address on and then forgets it: the stream owns
-    everything from here, and the consumer's `release` frees it — including the
-    stream struct, which is why this returns an address rather than a value it
-    would have to outlive.
+    The general form. Each `ExportedArray` has copied its buffers out of its
+    arena already, so the batches need not come from the same arena — which is
+    what a scan produces, one arena per batch. Ownership passes here: the
+    stream releases everything the consumer does not take.
 
-    Every array is exported up front. A lazier stream that pulled from a scan
-    inside `get_next` would hold one batch at a time instead of all of them;
-    that needs the scan to be resumable across a C callback, which is a larger
-    change than this file.
+    Every array is exported before the consumer sees the first one. A lazier
+    stream that read inside `get_next` would hold one batch instead of all of
+    them; that needs a scan that can be resumed from inside a C callback, and
+    this Mojo has no way to keep such an object alive across the boundary.
     """
-    if len(roots) == 0:
+    if len(exported) == 0:
         raise Error("arrow_mlake.carrow: a stream needs at least one array")
 
-    # One schema for the stream, taken from the first array — the C Data
-    # Interface requires every batch to share it.
-    var arrays = unsafe_alloc[Int](len(roots))
-
-    var first = export_c(arena, roots[0])
-    var head = first.into_raw()
-    arrays[unsafe_offset=0] = head[0]
-
-    for i in range(1, len(roots)):
-        var ex = export_c(arena, roots[i])
-        var pair = ex.into_raw()
+    var n = len(exported)
+    var arrays = unsafe_alloc[Int](n)
+    var schema = 0
+    for i in range(n):
+        var pair = exported[i].into_raw()
         arrays[unsafe_offset=i] = pair[0]
-        # Each export brings its own schema and the stream needs one. Release
-        # the duplicate rather than leak the block behind it.
-        release_c_schema(pair[1])
+        if i == 0:
+            # One schema for the stream: the C Data Interface requires every
+            # batch to share it, so the rest are duplicates.
+            schema = pair[1]
+        else:
+            release_c_schema(pair[1])
 
     var state = unsafe_alloc[_StreamState](1)
-    state[] = _StreamState(head[1], Int(arrays), len(roots), 0)
+    state[] = _StreamState(schema, Int(arrays), n, 0)
 
     var stream = unsafe_alloc[CArrowArrayStream](1)
     stream[] = CArrowArrayStream(0, 0, 0, 0, Int(state))
@@ -217,3 +219,19 @@ def export_stream(arena: ArrayArena, roots: List[Int]) raises -> Int:
         unsafe_from_address=base + 24
     )[] = _release
     return base
+
+
+def export_stream(arena: ArrayArena, roots: List[Int]) raises -> Int:
+    """Export one arena's arrays as a stream; returns its address.
+
+    The caller hands the address on and then forgets it: the stream owns
+    everything from here, and the consumer's `release` frees it — including
+    the stream struct, which is why this returns an address rather than a
+    value it would have to outlive.
+    """
+    if len(roots) == 0:
+        raise Error("arrow_mlake.carrow: a stream needs at least one array")
+    var exported = List[ExportedArray]()
+    for i in range(len(roots)):
+        exported.append(export_c(arena, roots[i]))
+    return export_stream_of(exported^)

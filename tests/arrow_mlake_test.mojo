@@ -66,6 +66,7 @@ from arrow_mlake import (
     ImportedArray,
     ImportedStream,
     export_stream,
+    export_stream_of,
     RecordBatch,
     array_i64,
     array_str,
@@ -77,6 +78,7 @@ from arrow_mlake import (
     bit_get,
     bit_set,
     bitmap_bytes,
+    ExportedArray,
     export_c,
     extension_name,
     import_batch_c,
@@ -994,6 +996,34 @@ def test_export_stream_refuses_an_empty_stream() raises:
     var arena = ArrayArena()
     with assert_raises(contains="at least one array"):
         _ = export_stream(arena, List[Int]())
+
+
+def test_export_stream_of_joins_batches_from_separate_arenas() raises:
+    """A scan hands back one arena per batch, so a stream must span them.
+
+    `export_c` copies the buffers out of the arena it reads, which is what
+    makes this legal — the arenas here are gone before the consumer looks.
+    """
+    var exported = List[ExportedArray]()
+    for size in [3, 2, 1]:
+        var arena = ArrayArena()
+        var values = List[Int64]()
+        for i in range(size):
+            values.append(Int64(i))
+        var root = _stream_batch(arena, values^)
+        exported.append(export_c(arena, root))
+
+    var stream = ImportedStream(export_stream_of(exported^))
+    var sizes = List[Int]()
+    while True:
+        var got = stream.next()
+        if not got:
+            break
+        sizes.append(got.value().num_rows)
+    assert_equal(len(sizes), 3)
+    assert_equal(sizes[0], 3)
+    assert_equal(sizes[2], 1)
+    stream.release()
 
 
 def main() raises:
