@@ -38,6 +38,7 @@ iterated — and it implements the consumer's half of the same release
 convention.
 """
 
+from std.memory import unsafe_memcpy, unsafe_memset
 from std.memory.alloc import unsafe_alloc
 
 from arrow_mlake.arrow import (
@@ -168,9 +169,14 @@ struct _Block(Movable):
         self.size = _align8(size)
         self.base = unsafe_alloc[UInt64](self.size // 8)
         self.used = 0
-        var p = self.base.unsafe_bitcast[UInt8]()
-        for i in range(self.size):
-            p[unsafe_offset=i] = 0
+        # A whole export is one block, so on a wide batch this is hundreds of
+        # megabytes: a byte at a time it cost more than the Parquet decode that
+        # produced the data. The zeroing itself stays — the tail of a buffer
+        # whose source list is short is read by the consumer, and padding
+        # between buffers should not be whatever the allocator left there.
+        unsafe_memset(
+            ptr=self.base.unsafe_bitcast[UInt8](), value=0, count=self.size
+        )
 
     def __init__(out self, *, deinit move: Self):
         self.base = move.base
@@ -204,9 +210,10 @@ struct _Block(Movable):
 
     def put_bytes(mut self, data: Span[UInt8, _]) raises -> Int:
         var at = self.take(len(data) if len(data) else 1)
-        var p = self.bytes_at(at)
-        for i in range(len(data)):
-            p[unsafe_offset=i] = data[i]
+        if len(data):
+            unsafe_memcpy(
+                dest=self.bytes_at(at), src=data.unsafe_ptr(), count=len(data)
+            )
         return at
 
     def put_cstring(mut self, text: StringSlice) raises -> Int:
@@ -438,10 +445,12 @@ def _export_array(arena: ArrayArena, root: Int, order: List[Int]) raises -> Int:
             if a.null_count > 0:
                 var vb = _validity_bytes(a)
                 var at = blk.take(vb)
-                var p = blk.bytes_at(at)
-                for k in range(vb):
-                    p[unsafe_offset=k] = (
-                        a.validity[k] if k < len(a.validity) else 0
+                var n = vb if vb < len(a.validity) else len(a.validity)
+                if n:
+                    unsafe_memcpy(
+                        dest=blk.bytes_at(at),
+                        src=a.validity.unsafe_ptr(),
+                        count=n,
                     )
                 bp[unsafe_offset=0] = Int64(at)
             else:
@@ -450,18 +459,34 @@ def _export_array(arena: ArrayArena, root: Int, order: List[Int]) raises -> Int:
         var ob = _offsets_bytes(a)
         if ob > 0:
             var at = blk.take(ob)
-            var p32 = blk.bytes_at(at)
             var wide = ob == 8 * (a.length + 1)
-            for k in range(a.length + 1):
-                var v: Int64
-                if wide:
-                    v = a.large_offsets[k] if k < len(a.large_offsets) else 0
-                else:
-                    v = Int64(a.offsets[k]) if k < len(a.offsets) else 0
-                var width = 8 if wide else 4
-                for b in range(width):
-                    p32[unsafe_offset=k * width + b] = UInt8(
-                        (UInt64(v) >> UInt64(8 * b)) & 0xFF
+            # Both lists are already native-endian, and the C Data Interface
+            # hands over native-endian buffers, so the little-endian byte
+            # assembly this replaces was a memcpy written out one shift at a
+            # time. An offsets buffer is `length + 1` wide and a short source
+            # list leaves zeros behind it, which is what the block gives.
+            var n: Int
+            if wide:
+                n = 8 * len(a.large_offsets)
+                if n > ob:
+                    n = ob
+                if n:
+                    unsafe_memcpy(
+                        dest=blk.bytes_at(at),
+                        src=a.large_offsets.unsafe_ptr().unsafe_bitcast[
+                            UInt8
+                        ](),
+                        count=n,
+                    )
+            else:
+                n = 4 * len(a.offsets)
+                if n > ob:
+                    n = ob
+                if n:
+                    unsafe_memcpy(
+                        dest=blk.bytes_at(at),
+                        src=a.offsets.unsafe_ptr().unsafe_bitcast[UInt8](),
+                        count=n,
                     )
             bp[unsafe_offset=slot] = Int64(at)
             slot += 1
@@ -469,9 +494,13 @@ def _export_array(arena: ArrayArena, root: Int, order: List[Int]) raises -> Int:
         if slot < nbuf:
             if vb2 > 0:
                 var at = blk.take(vb2)
-                var p = blk.bytes_at(at)
-                for k in range(vb2):
-                    p[unsafe_offset=k] = a.values[k] if k < len(a.values) else 0
+                var n = vb2 if vb2 < len(a.values) else len(a.values)
+                if n:
+                    unsafe_memcpy(
+                        dest=blk.bytes_at(at),
+                        src=a.values.unsafe_ptr(),
+                        count=n,
+                    )
                 bp[unsafe_offset=slot] = Int64(at)
             else:
                 bp[unsafe_offset=slot] = Int64(blk.take(1))
