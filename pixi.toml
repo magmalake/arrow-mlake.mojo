@@ -35,6 +35,13 @@ format-check = { cmd = "mojo format src tests tools && git diff --exit-code -- s
 carrow-import-lib = { cmd = "mkdir -p build && mojo build --emit shared-lib tools/carrow_import.mojo -I src -o build/libamcimport$SHLIB_EXT" }
 verify-c-import = { cmd = "bash tools/verify_c_import.sh", depends-on = ["carrow-import-lib"] }
 
+# The same gate, the other way round: Mojo produces an ArrowArrayStream and
+# pyarrow drains it. `verify-c-import` covers one array at a time; a stream is
+# a sequence with its own ownership rules — who frees a batch the consumer
+# never asked for — so it needs its own check against a real consumer.
+carrow-stream-lib = { cmd = "mkdir -p build && mojo build --emit shared-lib tools/carrow_stream_export.mojo -I src -o build/libamcstream$SHLIB_EXT" }
+verify-c-stream = { cmd = "bash tools/verify_c_stream.sh", depends-on = ["carrow-stream-lib"] }
+
 # ── pixi-build: consumable as a pixi source dependency ──────────────────────
 # Conda package name is arrow-mlake-mojo; the Mojo import is
 # `from arrow_mlake import …`.

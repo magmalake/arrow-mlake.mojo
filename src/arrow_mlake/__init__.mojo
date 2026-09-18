@@ -15,7 +15,7 @@ while True:
     print(batch.num_rows, "rows,", batch.num_columns(), "columns")
 ```
 
-Four modules, and no dependencies on anything but `std`:
+Five modules, and no dependencies on anything but `std`:
 
 * `arrow_mlake.arrow` — `ArrowType`, `ArrayData` and `ArrayArena`: one Arrow
   array as the columnar spec lays it out, with nesting held in an arena
@@ -25,6 +25,8 @@ Four modules, and no dependencies on anything but `std`:
   consume.
 * `arrow_mlake.carrow_import` — the same interface inbound, including
   `ArrowArrayStream`, which is the shape a scan arrives in.
+* `arrow_mlake.carrow_stream` — `export_stream`, the outbound half of that:
+  a sequence of batches as one `ArrowArrayStream` a consumer pulls from.
 * `arrow_mlake.batch` — `RecordBatch`, a run of rows as one array per column.
 
 **This tin is a stopgap.** The community Arrow implementation for Mojo is
@@ -121,3 +123,4 @@ from arrow_mlake.carrow_import import (
     release_c_array,
     release_c_schema,
 )
+from arrow_mlake.carrow_stream import export_stream, export_stream_of
