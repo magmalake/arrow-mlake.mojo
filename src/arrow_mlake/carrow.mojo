@@ -39,7 +39,7 @@ convention.
 """
 
 from std.memory import unsafe_memcpy, unsafe_memset
-from memory_region import Bump, HeapRegion
+from memory_region import BumpAllocator, HeapRegion
 
 from arrow_mlake.arrow import (
     AT_BINARY,
@@ -161,7 +161,7 @@ def _align8(n: Int) -> Int:
 struct _Block(Movable):
     """One export's bytes, carved front to back.
 
-    A thin shim over `memory_region.Bump` so the export keeps its own
+    A thin shim over `memory_region.BumpAllocator` so the export keeps its own
     vocabulary. What the library adds is the distinction the C Data Interface
     forces on us: `take` hands back an **offset**, and `address_of` turns one
     into a pointer for the moment a value has to be written into a
@@ -172,10 +172,10 @@ struct _Block(Movable):
     to hold: it is what a region mapped somewhere else can still resolve.
     """
 
-    var bump: Bump[HeapRegion]
+    var bump: BumpAllocator[HeapRegion]
 
     def __init__(out self, size: Int):
-        self.bump = Bump[HeapRegion](HeapRegion(size))
+        self.bump = BumpAllocator[HeapRegion](HeapRegion(size))
         # Zeroed for the same reason it always was: the tail of a buffer whose
         # source list is short is read by the consumer, and padding between
         # buffers should not be whatever the allocator left there.
@@ -191,26 +191,35 @@ struct _Block(Movable):
         return self.bump.region.base()
 
     def take(mut self, n: Int) raises -> Int:
-        """Reserve `n` bytes; returns their offset from the block's start."""
-        return self.bump.take(n)
+        """Claim `n` bytes; returns their offset from the block's start."""
+        return self.bump.claim(n)
 
     def address_of(self, offset: Int) -> Int:
         """`offset` as a pointer value, for storing in a C structure."""
-        return self.bump.address_of(offset)
+        return self.bump.unsafe_address(offset)
+
+    def into_raw(deinit self) -> Int:
+        """The bytes are the consumer's now — its release callback frees them.
+
+        Spelled rather than implied: the export used to end by dropping the
+        block, which read like a free and was the opposite of one.
+        """
+        return self.bump^.into_raw()
+
+    def close(deinit self):
+        """Give the bytes back, for an export that did not finish."""
+        self.bump^.close()
 
     def bytes_at(self, offset: Int) -> Pointer[UInt8, MutUntrackedOrigin]:
-        return self.bump.ptr_at(offset)
+        return self.bump.unsafe_ptr(offset)
 
     def words_at(self, offset: Int) -> Pointer[Int64, MutUntrackedOrigin]:
-        return self.bump.words_at(offset)
+        # The C Data Interface lays its structs out as Int64 fields, which is
+        # this file's business rather than the allocator's.
+        return self.bump.unsafe_ptr(offset).unsafe_bitcast[Int64]()
 
     def put_bytes(mut self, data: Span[UInt8, _]) raises -> Int:
-        var at = self.take(len(data) if len(data) else 1)
-        if len(data):
-            unsafe_memcpy(
-                dest=self.bytes_at(at), src=data.unsafe_ptr(), count=len(data)
-            )
-        return at
+        return self.bump.append(data)
 
     def put_cstring(mut self, text: StringSlice) raises -> Int:
         var b = text.as_bytes()
@@ -387,7 +396,8 @@ def _export_schema(
                     blk.address_of(structs + index[a.children[k]] * 72)
                 )
     var addr = blk.address_of(structs)
-    _ = blk^
+    # The consumer owns the bytes from here; its release callback frees them.
+    _ = blk^.into_raw()
     return addr
 
 
@@ -525,7 +535,8 @@ def _export_array(arena: ArrayArena, root: Int, order: List[Int]) raises -> Int:
                     blk.address_of(structs + index[a.children[k]] * 80)
                 )
     var addr = blk.address_of(structs)
-    _ = blk^
+    # The consumer owns the bytes from here; its release callback frees them.
+    _ = blk^.into_raw()
     return addr
 
 

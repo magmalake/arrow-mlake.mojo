@@ -35,7 +35,7 @@ tree is a bigger thing than the one here. `export_shared` raises on them
 rather than writing something a consumer would misread.
 """
 
-from memory_region import Bump, MappedRegion
+from memory_region import BumpAllocator, MappedRegion
 
 from arrow_mlake.arrow import (
     AT_BINARY,
@@ -69,26 +69,14 @@ def _json_escape(s: String) -> String:
     return out^
 
 
-def export_shared(
-    arena: ArrayArena, roots: List[Int], names: List[String], path: String
-) raises -> String:
-    """Write every column's buffers into a mapping at `path`; return the
-    manifest.
+def shared_size(arena: ArrayArena, roots: List[Int]) raises -> Int:
+    """How many bytes publishing these columns will take.
 
-    The manifest is JSON and names, for each column, its Arrow format string,
-    its length and null count, and the offset and length of each buffer. A
-    `null` buffer is one Arrow says is absent — an all-valid validity bitmap,
-    which a consumer passes through as `None`.
-
-    The region is unmapped before returning: the producer is finished with it,
-    and the file carries the bytes.
+    A region cannot grow, so a caller publishing several batches into one has
+    to add this up first. Every buffer is padded to 8 because a consumer casts
+    them where they lie.
     """
-    if len(roots) != len(names):
-        raise Error("carrow_shared: a name per column, please")
-
-    # One pass to size it, because a region cannot grow. Every buffer is
-    # padded to 8 so a consumer can cast it in place.
-    var size = 64
+    var size = 32
     for i in range(len(roots)):
         ref a = arena.nodes[roots[i]]
         if len(a.children):
@@ -100,12 +88,35 @@ def export_shared(
         size += _align8(_validity_bytes(a)) + 8
         size += _align8(_offsets_bytes(a)) + 8
         size += _align8(_values_bytes(a)) + 8
+    return size
 
-    var bump = Bump[MappedRegion](MappedRegion(path, size))
+
+def export_shared_into(
+    mut bump: BumpAllocator[MappedRegion],
+    arena: ArrayArena,
+    roots: List[Int],
+    names: List[String],
+) raises -> String:
+    """Write these columns into a region already open, and describe them.
+
+    The offsets in the manifest are from the region's base, not from this
+    batch, so several batches can share one mapping: the producer sizes it for
+    all of them, writes each in turn, and publishes each as it lands. That is
+    what keeps a mapping's create/size/map/unmap cycle from being paid per
+    batch — it was the larger half of publishing, bigger than the copy.
+    """
+    if len(roots) != len(names):
+        raise Error("carrow_shared: a name per column, please")
+
     var manifest = String('{"columns":[')
-
     for i in range(len(roots)):
         ref a = arena.nodes[roots[i]]
+        if len(a.children):
+            raise Error(
+                "carrow_shared: '"
+                + a.name
+                + "' is a nested column, which this does not publish yet"
+            )
         if i:
             manifest += ","
         manifest += '{"name":"' + _json_escape(names[i]) + '"'
@@ -151,21 +162,37 @@ def export_shared(
         manifest += "]}"
 
     manifest += '],"bytes":' + String(bump.used) + "}"
-    bump^.release()
+    return manifest^
+
+
+def export_shared(
+    arena: ArrayArena, roots: List[Int], names: List[String], path: String
+) raises -> String:
+    """One batch into a mapping of its own; returns the manifest.
+
+    The convenience form of `export_shared_into` for a caller with a single
+    batch to publish. The region is unmapped before returning: the producer is
+    finished with it, and the file carries the bytes.
+    """
+    var bump = BumpAllocator[MappedRegion](
+        MappedRegion(path, shared_size(arena, roots))
+    )
+    var manifest = export_shared_into(bump, arena, roots, names)
+    bump^.close()
     return manifest^
 
 
 def _put_raw(
-    mut bump: Bump[MappedRegion], src: Int, have: Int, want: Int
+    mut bump: BumpAllocator[MappedRegion], src: Int, have: Int, want: Int
 ) raises -> String:
     """`_put` for a buffer whose elements are not bytes, by address."""
     if want <= 0:
         return "null"
-    var at = bump.take(want)
+    var at = bump.claim(want)
     var n = want if want < have else have
     if n:
         unsafe_memcpy(
-            dest=bump.ptr_at(at),
+            dest=bump.unsafe_ptr(at),
             src=Pointer[UInt8, ImmUntrackedOrigin](unsafe_from_address=src),
             count=n,
         )
@@ -173,7 +200,7 @@ def _put_raw(
 
 
 def _put(
-    mut bump: Bump[MappedRegion], src: Span[UInt8, _], want: Int
+    mut bump: BumpAllocator[MappedRegion], src: Span[UInt8, _], want: Int
 ) raises -> String:
     """Copy one buffer into the region; return its manifest entry.
 
@@ -182,8 +209,9 @@ def _put(
     """
     if want <= 0:
         return "null"
-    var at = bump.take(want)
-    var n = want if want < len(src) else len(src)
-    if n:
-        unsafe_memcpy(dest=bump.ptr_at(at), src=src.unsafe_ptr(), count=n)
+    # `append` copies and says where; the buffer Arrow expects may be longer
+    # than the source, and the mapping is already zeroed behind it.
+    var at = bump.append(src[: want if want < len(src) else len(src)])
+    if want > len(src):
+        _ = bump.claim(want - len(src))
     return '{"offset":' + String(at) + ',"length":' + String(want) + "}"
