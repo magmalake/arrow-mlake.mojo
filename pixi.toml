@@ -10,12 +10,12 @@ platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 [tasks]
 # Pure Mojo, no FFI and no tin dependencies — consumers just
 # `-I ../arrow-mlake.mojo/src`.
-test = { cmd = "mkdir -p build && mojo build tests/arrow_mlake_test.mojo -I src -I tests -o build/arrow-mlake-test && ./build/arrow-mlake-test" }
+test = { cmd = "mkdir -p build && mojo build tests/arrow_mlake_test.mojo -I src -I tests -I ../memory-region.mojo/src -o build/arrow-mlake-test && ./build/arrow-mlake-test" }
 
 # mojolint (lint-mojo, below): the origin and threading mistakes the compiler
 # lets through, with mojo-lsp-server behind the rules. Exit 1 on findings.
-lint = { cmd = "mojolint --lsp -I src -I tests src tests" }
-lint-tools = { cmd = "mojolint --lsp -I src tools" }
+lint = { cmd = "mojolint --lsp -I src -I tests -I ../memory-region.mojo/src src tests" }
+lint-tools = { cmd = "mojolint --lsp -I src -I ../memory-region.mojo/src tools" }
 check = { depends-on = ["test", "lint", "lint-tools"] }
 
 fmt = { cmd = "mojo format src tests tools" }
@@ -32,14 +32,14 @@ format-check = { cmd = "mojo format src tests tools && git diff --exit-code -- s
 # entry points re-export what they imported, so the *export* side is gated
 # here too, by pyarrow comparing what comes back with what it sent.
 # macOS wants .dylib, Linux .so; the task reads $SHLIB_EXT.
-carrow-import-lib = { cmd = "mkdir -p build && mojo build --emit shared-lib tools/carrow_import.mojo -I src -o build/libamcimport$SHLIB_EXT" }
+carrow-import-lib = { cmd = "mkdir -p build && mojo build --emit shared-lib tools/carrow_import.mojo -I src -I ../memory-region.mojo/src -o build/libamcimport$SHLIB_EXT" }
 verify-c-import = { cmd = "bash tools/verify_c_import.sh", depends-on = ["carrow-import-lib"] }
 
 # The same gate, the other way round: Mojo produces an ArrowArrayStream and
 # pyarrow drains it. `verify-c-import` covers one array at a time; a stream is
 # a sequence with its own ownership rules — who frees a batch the consumer
 # never asked for — so it needs its own check against a real consumer.
-carrow-stream-lib = { cmd = "mkdir -p build && mojo build --emit shared-lib tools/carrow_stream_export.mojo -I src -o build/libamcstream$SHLIB_EXT" }
+carrow-stream-lib = { cmd = "mkdir -p build && mojo build --emit shared-lib tools/carrow_stream_export.mojo -I src -I ../memory-region.mojo/src -o build/libamcstream$SHLIB_EXT" }
 verify-c-stream = { cmd = "bash tools/verify_c_stream.sh", depends-on = ["carrow-stream-lib"] }
 
 # ── pixi-build: consumable as a pixi source dependency ──────────────────────
@@ -58,6 +58,10 @@ name = "arrow_mlake"
 
 [package.host-dependencies]
 mojo-compiler = "==1.0.0"
+# The export block is a `Bump` over a `Region` now. Declared here as well as on
+# the include path, because a consumer taking the built package needs the
+# tin's .mojopkg on its own import path.
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "80e0e59f8037aa01dfa9bcc60aeca9497791d551" }
 
 [package.build-dependencies]
 mojo-compiler = "==1.0.0"

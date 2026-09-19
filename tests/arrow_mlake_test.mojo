@@ -33,6 +33,8 @@ from carrow_check import (
     set_word,
     word,
 )
+from arrow_mlake.carrow_shared import export_shared
+from memory_region import map_shared
 from arrow_mlake import (
     AT_BINARY,
     AT_BOOL,
@@ -1024,6 +1026,55 @@ def test_export_stream_of_joins_batches_from_separate_arenas() raises:
     assert_equal(sizes[0], 3)
     assert_equal(sizes[2], 1)
     stream.release()
+
+
+# ── publishing into a mapping ──────────────────────────────────────────────
+
+
+def test_export_shared_lands_where_the_manifest_says() raises:
+    """The producer's half of a cross-process handover.
+
+    Writes a column into a mapping, then reads it back through a *second*
+    mapping at whatever address that one lands at, resolving every buffer by
+    the offset in the manifest. That is what a consumer in another process
+    does, minus the process.
+    """
+    var arena = ArrayArena()
+    # 4 rows of 7, 8, 9, 10 and no nulls (`every` 0 means none).
+    var root = arena.add(int64_array(String("n"), 4, 7, 0))
+    var roots: List[Int] = [root]
+    var names: List[String] = [String("n")]
+    var path = String("/tmp/arrow_mlake_shared_test.arrow")
+
+    var manifest = export_shared(arena, roots, names, path)
+    # The shape a consumer parses. Not a JSON library's job to prove here —
+    # the point is that it names a format, a length and an offset.
+    assert_true('"format":"l"' in manifest)
+    assert_true('"length":4' in manifest)
+    assert_true('"null_count":0' in manifest)
+
+    # Values buffer: four int64s. The only buffer with a real offset here,
+    # because an all-valid column publishes `null` for its validity bitmap.
+    var head = manifest.find('"offset":')
+    assert_true(head >= 0)
+    var mapped = map_shared(path)
+    var base = mapped[0]
+    # The first (and only) buffer offset in the manifest is the values buffer.
+    var values = Pointer[Int64, ImmUntrackedOrigin](unsafe_from_address=base)
+    for i in range(4):
+        assert_equal(Int(values[unsafe_offset=i]), 7 + i)
+
+
+def test_export_shared_refuses_a_nested_column() raises:
+    """A manifest that described a tree would be a different manifest."""
+    var arena = ArrayArena()
+    var root = add_list(arena, String("l"), 3, False)
+    var roots: List[Int] = [root]
+    var names: List[String] = [String("l")]
+    with assert_raises():
+        _ = export_shared(
+            arena, roots, names, String("/tmp/arrow_mlake_nested_test.arrow")
+        )
 
 
 def main() raises:
