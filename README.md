@@ -161,13 +161,13 @@ flags, nothing else to check out.
 ## Test
 
 ```sh
-pixi run -e stable test       # stable Mojo 1.0.0
+pixi run -e stable test       # stable Mojo 1.1.0
 pixi run -e default test      # nightly
 pixi run -e default lint      # mojolint --lsp
 pixi run verify-c-import      # the pyarrow gate; needs `uv`
 ```
 
-The 34 unit tests build every array by hand against the columnar spec rather
+The unit tests build every array by hand against the columnar spec rather
 than reading a file, so the coverage is a property of this library and not of
 somebody else's decoder: no-validity and with-validity, the three offset
 widths, all four nested shapes, the null type with no buffers at all, and an
