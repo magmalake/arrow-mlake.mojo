@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-26
+
+### Changed
+
+- Built with Mojo 1.1.0. `mojo-compiler` is pinned `==1.1.0` for the package
+  build and required `>=1.1.0,<2` at run time, and the `nightly` environment
+  tracks Mojo 1.2.0.dev. The published 0.1.0 was built with 1.0.0, whose
+  precompiled `.mojoc` a 1.1.0 compiler refuses.
+- The C Data Interface export copies each buffer with one `memcpy` instead of
+  writing it a byte at a time (#1).
+
+## [0.1.0] - 2026-09-07
+
 ### Added
 
 - **The initial extraction from
