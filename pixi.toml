@@ -2,7 +2,7 @@
 authors = ["Marius S <39998+winding-lines@users.noreply.github.com>"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 name = "arrow-mlake.mojo"
-version = "0.1.0"
+version = "0.1.1"
 description = "The Apache Arrow memory layout and the C Data Interface, in pure Mojo — a stopgap until marrow builds on Mojo 1.x."
 preview = ["pixi-build"]
 platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
@@ -47,7 +47,7 @@ verify-c-stream = { cmd = "bash tools/verify_c_stream.sh", depends-on = ["carrow
 # `from arrow_mlake import …`.
 [package]
 name = "arrow-mlake-mojo"
-version = "0.1.0"
+version = "0.1.1"
 
 [package.build]
 backend = { name = "pixi-build-mojo", version = "0.*" }
