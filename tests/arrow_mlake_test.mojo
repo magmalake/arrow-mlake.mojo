@@ -34,7 +34,7 @@ from carrow_check import (
     word,
 )
 from arrow_mlake.carrow_shared import export_shared
-from memory_region import map_shared
+from memory_region import SharedMapping
 from arrow_mlake import (
     AT_BINARY,
     AT_BOOL,
@@ -1057,12 +1057,20 @@ def test_export_shared_lands_where_the_manifest_says() raises:
     # because an all-valid column publishes `null` for its validity bitmap.
     var head = manifest.find('"offset":')
     assert_true(head >= 0)
-    var mapped = map_shared(path)
-    var base = mapped[0]
     # The first (and only) buffer offset in the manifest is the values buffer.
-    var values = Pointer[Int64, ImmUntrackedOrigin](unsafe_from_address=base)
-    for i in range(4):
-        assert_equal(Int(values[unsafe_offset=i]), 7 + i)
+    var bytes = manifest.as_bytes()
+    var offset = 0
+    var digits = head + 9  # past `"offset":`
+    var i = digits
+    while i < len(bytes) and bytes[i] >= UInt8(48) and bytes[i] <= UInt8(57):
+        offset = offset * 10 + Int(bytes[i] - UInt8(48))
+        i += 1
+    assert_true(i > digits)
+
+    var mapped = SharedMapping(path)
+    var values = mapped.span[DType.int64](offset, 4)
+    for r in range(4):
+        assert_equal(Int(values[r]), 7 + r)
 
 
 def test_export_shared_refuses_a_nested_column() raises:
