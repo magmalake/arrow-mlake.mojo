@@ -53,7 +53,7 @@ from arrow_mlake.carrow import (
     _values_bytes,
     n_buffers_for,
 )
-from std.memory import unsafe_memcpy
+from std.sys.info import size_of
 
 
 def _json_escape(s: String) -> String:
@@ -142,16 +142,9 @@ def export_shared_into(
             # The offsets lists are native-endian already, and so is every
             # Arrow buffer, so they go over as their own bytes.
             if wide:
-                manifest += "," + _put_raw(
-                    bump,
-                    Int(a.large_offsets.unsafe_ptr()),
-                    8 * len(a.large_offsets),
-                    ob,
-                )
+                manifest += "," + _put(bump, Span(a.large_offsets), ob)
             else:
-                manifest += "," + _put_raw(
-                    bump, Int(a.offsets.unsafe_ptr()), 4 * len(a.offsets), ob
-                )
+                manifest += "," + _put(bump, Span(a.offsets), ob)
             slot += 1
 
         var vb = _values_bytes(a)
@@ -182,36 +175,23 @@ def export_shared(
     return manifest^
 
 
-def _put_raw(
-    mut bump: BumpAllocator[MappedRegion], src: Int, have: Int, want: Int
-) raises -> String:
-    """`_put` for a buffer whose elements are not bytes, by address."""
-    if want <= 0:
-        return "null"
-    var at = bump.claim(want)
-    var n = want if want < have else have
-    if n:
-        unsafe_memcpy(
-            dest=bump.unsafe_ptr(at),
-            src=Pointer[UInt8, ImmUntrackedOrigin](unsafe_from_address=src),
-            count=n,
-        )
-    return '{"offset":' + String(at) + ',"length":' + String(want) + "}"
-
-
-def _put(
-    mut bump: BumpAllocator[MappedRegion], src: Span[UInt8, _], want: Int
+def _put[
+    dtype: DType, //
+](
+    mut bump: BumpAllocator[MappedRegion],
+    src: Span[Scalar[dtype], _],
+    want: Int,
 ) raises -> String:
     """Copy one buffer into the region; return its manifest entry.
 
-    A source shorter than the buffer Arrow expects leaves zeros behind it,
-    which is what a freshly mapped file gives for free.
+    `want` is the byte length Arrow expects. A source shorter than that
+    leaves zeros behind it, which is what a freshly mapped file gives for
+    free.
     """
     if want <= 0:
         return "null"
-    # `append` copies and says where; the buffer Arrow expects may be longer
-    # than the source, and the mapping is already zeroed behind it.
-    var at = bump.append(src[: want if want < len(src) else len(src)])
-    if want > len(src):
-        _ = bump.claim(want - len(src))
+    var at = bump.claim(want)
+    var n = min(len(src), want // size_of[Scalar[dtype]]())
+    if n:
+        bump.span[dtype](at, n).copy_from(src[:n])
     return '{"offset":' + String(at) + ',"length":' + String(want) + "}"
