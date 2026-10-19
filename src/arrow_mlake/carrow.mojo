@@ -38,7 +38,8 @@ iterated — and it implements the consumer's half of the same release
 convention.
 """
 
-from std.memory import unsafe_memcpy, unsafe_memset
+from std.memory import unsafe_memset
+from std.sys.info import size_of
 from memory_region import BumpAllocator, HeapRegion
 
 from arrow_mlake.arrow import (
@@ -179,8 +180,9 @@ struct _Block(Movable):
         # Zeroed for the same reason it always was: the tail of a buffer whose
         # source list is short is read by the consumer, and padding between
         # buffers should not be whatever the allocator left there.
+        # Before anything is claimed, so the whole region rather than a span.
         unsafe_memset(
-            ptr=self.bytes_at(0), value=0, count=self.bump.region.size()
+            ptr=self.bump.unsafe_ptr(0), value=0, count=self.bump.region.size()
         )
 
     def __init__(out self, *, deinit move: Self):
@@ -210,13 +212,29 @@ struct _Block(Movable):
         """Give the bytes back, for an export that did not finish."""
         self.bump^.close()
 
-    def bytes_at(self, offset: Int) -> Pointer[UInt8, MutUntrackedOrigin]:
-        return self.bump.unsafe_ptr(offset)
+    def words(
+        ref self, offset: Int, count: Int
+    ) -> Span[Int64, origin_of(self.bump)]:
+        """`count` 8-byte words at `offset`: a view that borrows the block.
 
-    def words_at(self, offset: Int) -> Pointer[Int64, MutUntrackedOrigin]:
-        # The C Data Interface lays its structs out as Int64 fields, which is
-        # this file's business rather than the allocator's.
-        return self.bump.unsafe_ptr(offset).unsafe_bitcast[Int64]()
+        The C Data Interface lays its structs out as Int64 fields, which is
+        this file's business rather than the allocator's.
+        """
+        return self.bump.span[DType.int64](offset, count)
+
+    def put_padded[
+        dtype: DType, //
+    ](mut self, src: Span[Scalar[dtype], _], nbytes: Int) raises -> Int:
+        """Claim `nbytes` and copy as much of `src` as fits into them.
+
+        A source shorter than the buffer Arrow expects leaves zeros behind
+        it, which the block was filled with. Returns the offset.
+        """
+        var at = self.take(nbytes)
+        var n = min(len(src), nbytes // size_of[Scalar[dtype]]())
+        if n:
+            self.bump.span[dtype](at, n).copy_from(src[:n])
+        return at
 
     def put_bytes(mut self, data: Span[UInt8, _]) raises -> Int:
         return self.bump.append(data)
@@ -224,11 +242,10 @@ struct _Block(Movable):
     def put_cstring(mut self, text: StringSlice) raises -> Int:
         var b = text.as_bytes()
         var at = self.take(len(b) + 1)
+        var dest = self.bump.span[DType.uint8](at, len(b) + 1)
         if len(b):
-            unsafe_memcpy(
-                dest=self.bytes_at(at), src=b.unsafe_ptr(), count=len(b)
-            )
-        self.bytes_at(at)[unsafe_offset=len(b)] = 0
+            dest[: len(b)].copy_from(b)
+        dest[len(b)] = 0
         return at
 
 
@@ -376,23 +393,23 @@ def _export_schema(
         var mdp = 0
         if len(md):
             mdp = blk.put_bytes(Span(md))
-        var w = blk.words_at(structs + i * 72)
+        var w = blk.words(structs + i * 72, 9)
         # Pointers from here on: a consumer of the C Data Interface reads
         # these in this process, so offsets have to become addresses.
-        w[unsafe_offset=0] = Int64(blk.address_of(fmt))
-        w[unsafe_offset=1] = Int64(blk.address_of(nm))
-        w[unsafe_offset=2] = Int64(blk.address_of(mdp)) if mdp else 0
-        w[unsafe_offset=3] = ARROW_FLAG_NULLABLE if a.nullable else 0
-        w[unsafe_offset=4] = Int64(kids)
-        w[unsafe_offset=5] = Int64(blk.address_of(kidptr)) if kids else 0
-        w[unsafe_offset=6] = 0
-        w[unsafe_offset=7] = 0
-        w[unsafe_offset=8] = Int64(blk.address()) if i == 0 else 0
+        w[0] = Int64(blk.address_of(fmt))
+        w[1] = Int64(blk.address_of(nm))
+        w[2] = Int64(blk.address_of(mdp)) if mdp else 0
+        w[3] = ARROW_FLAG_NULLABLE if a.nullable else 0
+        w[4] = Int64(kids)
+        w[5] = Int64(blk.address_of(kidptr)) if kids else 0
+        w[6] = 0
+        w[7] = 0
+        w[8] = Int64(blk.address()) if i == 0 else 0
         _store_schema_release(blk.address_of(structs + i * 72), i == 0)
         if kids:
-            var kp = blk.words_at(kidptr)
+            var kp = blk.words(kidptr, kids)
             for k in range(kids):
-                kp[unsafe_offset=k] = Int64(
+                kp[k] = Int64(
                     blk.address_of(structs + index[a.children[k]] * 72)
                 )
     var addr = blk.address_of(structs)
@@ -450,88 +467,53 @@ def _export_array(arena: ArrayArena, root: Int, order: List[Int]) raises -> Int:
         var bufptr = 0
         if nbuf:
             bufptr = blk.take(nbuf * 8)
-        var bp = blk.words_at(bufptr) if nbuf else blk.words_at(structs)
+        var bp = blk.words(bufptr, nbuf)
         if nbuf > 0:
             # buffer 0 is always validity, NULL when there are no nulls
             if a.null_count > 0:
-                var vb = _validity_bytes(a)
-                var at = blk.take(vb)
-                var n = vb if vb < len(a.validity) else len(a.validity)
-                if n:
-                    unsafe_memcpy(
-                        dest=blk.bytes_at(at),
-                        src=a.validity.unsafe_ptr(),
-                        count=n,
-                    )
-                bp[unsafe_offset=0] = Int64(blk.address_of(at))
+                var at = blk.put_padded(Span(a.validity), _validity_bytes(a))
+                bp[0] = Int64(blk.address_of(at))
             else:
-                bp[unsafe_offset=0] = 0
+                bp[0] = 0
         var slot = 1
         var ob = _offsets_bytes(a)
         if ob > 0:
-            var at = blk.take(ob)
-            var wide = ob == 8 * (a.length + 1)
             # Both lists are already native-endian, and the C Data Interface
-            # hands over native-endian buffers, so the little-endian byte
-            # assembly this replaces was a memcpy written out one shift at a
-            # time. An offsets buffer is `length + 1` wide and a short source
-            # list leaves zeros behind it, which is what the block gives.
-            var n: Int
-            if wide:
-                n = 8 * len(a.large_offsets)
-                if n > ob:
-                    n = ob
-                if n:
-                    unsafe_memcpy(
-                        dest=blk.bytes_at(at),
-                        src=a.large_offsets.unsafe_ptr().unsafe_bitcast[
-                            UInt8
-                        ](),
-                        count=n,
-                    )
+            # hands over native-endian buffers, so each goes over as its own
+            # elements. An offsets buffer is `length + 1` wide and a short
+            # source list leaves zeros behind it, which is what the block
+            # gives.
+            var at: Int
+            if ob == 8 * (a.length + 1):
+                at = blk.put_padded(Span(a.large_offsets), ob)
             else:
-                n = 4 * len(a.offsets)
-                if n > ob:
-                    n = ob
-                if n:
-                    unsafe_memcpy(
-                        dest=blk.bytes_at(at),
-                        src=a.offsets.unsafe_ptr().unsafe_bitcast[UInt8](),
-                        count=n,
-                    )
-            bp[unsafe_offset=slot] = Int64(blk.address_of(at))
+                at = blk.put_padded(Span(a.offsets), ob)
+            bp[slot] = Int64(blk.address_of(at))
             slot += 1
         var vb2 = _values_bytes(a)
         if slot < nbuf:
             if vb2 > 0:
-                var at = blk.take(vb2)
-                var n = vb2 if vb2 < len(a.values) else len(a.values)
-                if n:
-                    unsafe_memcpy(
-                        dest=blk.bytes_at(at),
-                        src=a.values.unsafe_ptr(),
-                        count=n,
-                    )
-                bp[unsafe_offset=slot] = Int64(blk.address_of(at))
+                var at = blk.put_padded(Span(a.values), vb2)
+                bp[slot] = Int64(blk.address_of(at))
             else:
-                bp[unsafe_offset=slot] = Int64(blk.address_of(blk.take(1)))
+                bp[slot] = Int64(blk.address_of(blk.take(1)))
             slot += 1
-        var w = blk.words_at(structs + i * 80)
-        w[unsafe_offset=0] = Int64(a.length)
-        w[unsafe_offset=1] = Int64(a.null_count)
-        w[unsafe_offset=2] = 0
-        w[unsafe_offset=3] = Int64(nbuf)
-        w[unsafe_offset=4] = Int64(kids)
-        w[unsafe_offset=5] = Int64(blk.address_of(bufptr)) if nbuf else 0
-        w[unsafe_offset=6] = Int64(blk.address_of(kidptr)) if kids else 0
-        w[unsafe_offset=7] = 0
-        w[unsafe_offset=8] = 0
-        w[unsafe_offset=9] = Int64(blk.address()) if i == 0 else 0
+        var w = blk.words(structs + i * 80, 10)
+        w[0] = Int64(a.length)
+        w[1] = Int64(a.null_count)
+        w[2] = 0
+        w[3] = Int64(nbuf)
+        w[4] = Int64(kids)
+        w[5] = Int64(blk.address_of(bufptr)) if nbuf else 0
+        w[6] = Int64(blk.address_of(kidptr)) if kids else 0
+        w[7] = 0
+        w[8] = 0
+        w[9] = Int64(blk.address()) if i == 0 else 0
         _store_array_release(blk.address_of(structs + i * 80), i == 0)
         if kids:
-            var kp = blk.words_at(kidptr)
+            var kp = blk.words(kidptr, kids)
             for k in range(kids):
-                kp[unsafe_offset=k] = Int64(
+                kp[k] = Int64(
                     blk.address_of(structs + index[a.children[k]] * 80)
                 )
     var addr = blk.address_of(structs)
