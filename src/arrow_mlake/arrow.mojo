@@ -148,78 +148,81 @@ struct ArrowType(Copyable, Movable, Writable):
     def format(self) -> String:
         """The Arrow C Data Interface format string for this type."""
         var i = self.id
-        if i == AT_NULL:
-            return String("n")
-        if i == AT_BOOL:
-            return String("b")
-        if i == AT_INT8:
-            return String("c")
-        if i == AT_UINT8:
-            return String("C")
-        if i == AT_INT16:
-            return String("s")
-        if i == AT_UINT16:
-            return String("S")
-        if i == AT_INT32:
-            return String("i")
-        if i == AT_UINT32:
-            return String("I")
-        if i == AT_INT64:
-            return String("l")
-        if i == AT_UINT64:
-            return String("L")
-        if i == AT_FLOAT16:
-            return String("e")
-        if i == AT_FLOAT32:
-            return String("f")
-        if i == AT_FLOAT64:
-            return String("g")
-        if i == AT_UTF8:
-            return String("u")
-        if i == AT_LARGE_UTF8:
-            return String("U")
-        if i == AT_BINARY:
-            return String("z")
-        if i == AT_LARGE_BINARY:
-            return String("Z")
-        if i == AT_FIXED_SIZE_BINARY:
-            return String("w:", self.byte_width)
-        if i == AT_DECIMAL128:
-            return String("d:", self.precision, ",", self.scale)
-        if i == AT_DATE32:
-            return String("tdD")
-        if i == AT_TIME32:
-            return String("tt", unit_suffix(self.unit))
-        if i == AT_TIME64:
-            return String("tt", unit_suffix(self.unit))
-        if i == AT_TIMESTAMP:
-            return String("ts", unit_suffix(self.unit), ":", self.tz)
-        if i == AT_LIST:
-            return String("+l")
-        if i == AT_LARGE_LIST:
-            return String("+L")
-        if i == AT_STRUCT:
-            return String("+s")
-        if i == AT_MAP:
-            return String("+m")
-        return String("n")
+        match i:
+            case == AT_NULL:
+                return String("n")
+            case == AT_BOOL:
+                return String("b")
+            case == AT_INT8:
+                return String("c")
+            case == AT_UINT8:
+                return String("C")
+            case == AT_INT16:
+                return String("s")
+            case == AT_UINT16:
+                return String("S")
+            case == AT_INT32:
+                return String("i")
+            case == AT_UINT32:
+                return String("I")
+            case == AT_INT64:
+                return String("l")
+            case == AT_UINT64:
+                return String("L")
+            case == AT_FLOAT16:
+                return String("e")
+            case == AT_FLOAT32:
+                return String("f")
+            case == AT_FLOAT64:
+                return String("g")
+            case == AT_UTF8:
+                return String("u")
+            case == AT_LARGE_UTF8:
+                return String("U")
+            case == AT_BINARY:
+                return String("z")
+            case == AT_LARGE_BINARY:
+                return String("Z")
+            case == AT_FIXED_SIZE_BINARY:
+                return String("w:", self.byte_width)
+            case == AT_DECIMAL128:
+                return String("d:", self.precision, ",", self.scale)
+            case == AT_DATE32:
+                return String("tdD")
+            case == AT_TIME32 | == AT_TIME64:
+                return String("tt", unit_suffix(self.unit))
+            case == AT_TIMESTAMP:
+                return String("ts", unit_suffix(self.unit), ":", self.tz)
+            case == AT_LIST:
+                return String("+l")
+            case == AT_LARGE_LIST:
+                return String("+L")
+            case == AT_STRUCT:
+                return String("+s")
+            case == AT_MAP:
+                return String("+m")
+            case _:
+                return String("n")
 
     def write_to(self, mut writer: Some[Writer]):
         var i = self.id
-        if i == AT_DECIMAL128:
-            writer.write("decimal128(", self.precision, ", ", self.scale, ")")
-        elif i == AT_FIXED_SIZE_BINARY:
-            writer.write("fixed_size_binary[", self.byte_width, "]")
-        elif i == AT_TIMESTAMP:
-            writer.write("timestamp[", unit_name(self.unit))
-            if self.tz:
-                writer.write(", tz=", self.tz)
-            writer.write("]")
-        elif i == AT_TIME32 or i == AT_TIME64:
-            writer.write("time", 32 if i == AT_TIME32 else 64)
-            writer.write("[", unit_name(self.unit), "]")
-        else:
-            writer.write(_type_name(i))
+        match i:
+            case == AT_DECIMAL128:
+                writer.write(
+                    "decimal128(", self.precision, ", ", self.scale, ")"
+                )
+            case == AT_FIXED_SIZE_BINARY:
+                writer.write("fixed_size_binary[", self.byte_width, "]")
+            case == AT_TIMESTAMP:
+                writer.write("timestamp[", unit_name(self.unit))
+                if self.tz:
+                    writer.write(", tz=", self.tz)
+                writer.write("]")
+            case == AT_TIME32 | == AT_TIME64:
+                writer.write("time", 32 if i == AT_TIME32 else 64)
+                writer.write("[", unit_name(self.unit), "]")
+            case _:
+                writer.write(_type_name(i))
         if self.extension:
             writer.write(" <", self.extension, ">")
 
