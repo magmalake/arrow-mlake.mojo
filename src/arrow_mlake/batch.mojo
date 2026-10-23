@@ -140,26 +140,27 @@ def array_i64_into(
 def array_f64_into(
     a: ArrayData, mut vals: List[Float64], mut valid: List[Bool]
 ) raises:
-    if a.type.id == AT_FLOAT64:
-        for i in range(a.length):
-            vals.append(load_f64(Span(a.values), i))
-    elif a.type.id == AT_FLOAT32:
-        for i in range(a.length):
-            vals.append(Float64(load_f32(Span(a.values), i)))
-    elif a.type.id == AT_FLOAT16:
-        for i in range(a.length):
-            var bits = UInt16(a.values[i * 2]) | (
-                UInt16(a.values[i * 2 + 1]) << 8
+    match a.type.id:
+        case == AT_FLOAT64:
+            for i in range(a.length):
+                vals.append(load_f64(Span(a.values), i))
+        case == AT_FLOAT32:
+            for i in range(a.length):
+                vals.append(Float64(load_f32(Span(a.values), i)))
+        case == AT_FLOAT16:
+            for i in range(a.length):
+                var bits = UInt16(a.values[i * 2]) | (
+                    UInt16(a.values[i * 2 + 1]) << 8
+                )
+                vals.append(Float64(bitcast[DType.float16](bits)))
+        case _:
+            raise Error(
+                String(
+                    "arrow_mlake: column of type ",
+                    String(a.type),
+                    " is not floating point",
+                )
             )
-            vals.append(Float64(bitcast[DType.float16](bits)))
-    else:
-        raise Error(
-            String(
-                "arrow_mlake: column of type ",
-                String(a.type),
-                " is not floating point",
-            )
-        )
     _append_validity(a, valid)
 
 

@@ -58,24 +58,24 @@ name = "arrow_mlake"
 extra-args = ["-I", "$PREFIX/lib/mojo"]
 
 [package.host-dependencies]
-mojo-compiler = "==1.1.0"
+mojo-compiler = "==1.2.0"
 # The export block is a `Bump` over a `Region` now. Declared here as well as on
 # the include path, because a consumer taking the built package needs the
 # tin's .mojoc on its own import path.
 memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "86822ef7697549521f3034278bf06db6ae88b34b" }
 
 [package.build-dependencies]
-mojo-compiler = "==1.1.0"
+mojo-compiler = "==1.2.0"
 
 [package.run-dependencies]
-mojo-compiler = ">=1.1.0,<2"
+mojo-compiler = ">=1.2.0,<2"
 memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "86822ef7697549521f3034278bf06db6ae88b34b" }
 
 [feature.nightly.dependencies]
-modular = ">=26.7.0.dev2026101905,<28"
+modular = ">=26.8.0.dev2026102305,<28"
 
 [feature.stable.dependencies]
-mojo-compiler = "==1.1.0"
+mojo-compiler = "==1.2.0"
 
 [target.osx-arm64.activation.env]
 SHLIB_EXT = ".dylib"
