@@ -161,7 +161,7 @@ flags, nothing else to check out.
 ## Test
 
 ```sh
-pixi run -e stable test       # stable Mojo 1.1.0
+pixi run -e stable test       # stable Mojo 1.2.0
 pixi run -e default test      # nightly
 pixi run -e default lint      # mojolint --lsp
 pixi run verify-c-import      # the pyarrow gate; needs `uv`
