@@ -62,14 +62,14 @@ mojo-compiler = "==1.2.0"
 # The export block is a `Bump` over a `Region` now. Declared here as well as on
 # the include path, because a consumer taking the built package needs the
 # tin's .mojoc on its own import path.
-memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "86822ef7697549521f3034278bf06db6ae88b34b" }
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "91ff4418b44a89f9354e7d32633e9b11ad365dfd" }
 
 [package.build-dependencies]
 mojo-compiler = "==1.2.0"
 
 [package.run-dependencies]
 mojo-compiler = ">=1.2.0,<2"
-memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "86822ef7697549521f3034278bf06db6ae88b34b" }
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "91ff4418b44a89f9354e7d32633e9b11ad365dfd" }
 
 [feature.nightly.dependencies]
 modular = ">=26.8.0.dev2026102305,<28"
@@ -94,4 +94,4 @@ stable = ["stable"]
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
-lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "5682b29cedd8d7cd768543ef26ab930732232b79" }
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "4a635f9a0ca0b7b639cd3823534cf0b36ff63985" }
