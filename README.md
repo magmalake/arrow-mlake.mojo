@@ -45,6 +45,8 @@ Thrift implementation it would never execute. `parquet-mojo` now depends on this
 | `arrow_mlake.carrow` | `export_c` — an array out over the C Data Interface, release callbacks and all |
 | `arrow_mlake.carrow_import` | `import_c`, `import_batch_c`, `ImportedArray`, `ImportedStream` — the same interface inbound, including `ArrowArrayStream` |
 | `arrow_mlake.batch` | `RecordBatch`, a run of rows as one array per column, with typed accessors |
+| `arrow_mlake.ipc` | `IpcWriter`, `write_ipc_stream`, `read_ipc_stream` — batches to the Arrow IPC stream format and back |
+| `arrow_mlake.flatbuf` | the FlatBuffers builder and bounds-checked reader the IPC metadata is written in |
 
 Types it can name, both directions: `null`, `bool`, every signed and unsigned
 integer width, `float16`/`float32`/`float64`, `utf8` and `large_utf8`, `binary`
@@ -123,6 +125,30 @@ raise, because conflating the two turns a failed scan into a short one. Each
 batch is released as soon as it has been copied, so a long scan holds one
 batch of producer memory at a time rather than the whole stream.
 
+### Arrow IPC streams
+
+The C Data Interface hands buffers to another library in the same process.
+The IPC stream format is for everything else: a file, a socket, a shared
+mapping another process reads.
+
+```mojo
+from arrow_mlake import IpcWriter, read_ipc_stream
+
+var w = IpcWriter(batch)          # the schema comes from this batch
+w.write(batch)
+var bytes = w^.finish()           # pyarrow's ipc.open_stream reads this
+
+var s = read_ipc_stream(Span(bytes))
+print(len(s.batches), "batches;", s.schema.num_columns(), "columns")
+```
+
+Every type above goes both ways, nested to any depth, with each field's
+nullability, its extension name and its `PARQUET:field_id`. Dictionary
+encoding, compression and the IPC *file* format are not implemented, and a
+stream that uses them is refused with an error naming the feature. The reader
+bounds-checks every FlatBuffers offset and every buffer against the message
+body, and copies the buffers into the `ArrayData`, as the C import does.
+
 ### Importing copies
 
 `ArrayData` owns its buffers as `List[UInt8]`, so every buffer a producer hands
@@ -165,6 +191,7 @@ pixi run -e stable test       # stable Mojo 1.2.0
 pixi run -e default test      # nightly
 pixi run -e default lint      # mojolint --lsp
 pixi run verify-c-import      # the pyarrow gate; needs `uv`
+pixi run verify-ipc           # pyarrow and IPC streams, both ways; needs `uv`
 ```
 
 The unit tests build every array by hand against the columnar spec rather
@@ -181,6 +208,12 @@ not.
 `_export_to_c` moves them over, and this imports them and exports them straight
 back for pyarrow to compare with what it sent. An importer checked only against
 our own exporter would prove the two agree and nothing else.
+
+`verify-ipc` does the same for IPC streams, in both directions. pyarrow reads
+the test corpus as written here, validates every buffer and writes it back
+with its own writer, and that is compared with the corpus. Then pyarrow
+writes batches of every supported type, sliced and nested, and this reads
+them and writes them again for pyarrow to compare with what it sent.
 
 ## License
 

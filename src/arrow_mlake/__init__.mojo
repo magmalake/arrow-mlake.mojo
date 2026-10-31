@@ -15,7 +15,7 @@ while True:
     print(batch.num_rows, "rows,", batch.num_columns(), "columns")
 ```
 
-Five modules, and no dependencies on anything but `std`:
+Seven modules, and no dependencies on anything but `std`:
 
 * `arrow_mlake.arrow` — `ArrowType`, `ArrayData` and `ArrayArena`: one Arrow
   array as the columnar spec lays it out, with nesting held in an arena
@@ -28,6 +28,10 @@ Five modules, and no dependencies on anything but `std`:
 * `arrow_mlake.carrow_stream` — `export_stream`, the outbound half of that:
   a sequence of batches as one `ArrowArrayStream` a consumer pulls from.
 * `arrow_mlake.batch` — `RecordBatch`, a run of rows as one array per column.
+* `arrow_mlake.ipc` — the Arrow IPC stream format: `IpcWriter` and
+  `read_ipc_stream`, batches to bytes and back, for files, sockets and shared
+  mappings. `arrow_mlake.flatbuf` is the FlatBuffers builder and reader under
+  it.
 
 **This tin is a stopgap.** The community Arrow implementation for Mojo is
 [marrow](https://github.com/kszucs/marrow), which is more complete than this
@@ -124,3 +128,10 @@ from arrow_mlake.carrow_import import (
     release_c_schema,
 )
 from arrow_mlake.carrow_stream import export_stream, export_stream_of
+from arrow_mlake.ipc import (
+    IpcStream,
+    IpcWriter,
+    encode_schema_message,
+    read_ipc_stream,
+    write_ipc_stream,
+)

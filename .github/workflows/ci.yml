@@ -85,3 +85,9 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           pixi run verify-c-stream
+
+      - name: Arrow IPC streams, both ways with pyarrow
+        working-directory: arrow-mlake.mojo
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          pixi run verify-ipc
