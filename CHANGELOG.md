@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-31
+
+### Added
+
+- **Arrow IPC streams** (`arrow_mlake.ipc`, #12): `IpcWriter` and
+  `write_ipc_stream` write `RecordBatch`es as an Arrow IPC stream, and
+  `read_ipc_stream` reads one back into an `IpcStream` holding the schema and
+  every batch. It covers every type `ArrayData` holds, nested to any depth,
+  with field nullability, `ARROW:extension:name` and `PARQUET:field_id`.
+  Dictionaries, compression, unions, run-end encoding and the view types are
+  refused by name. `pixi run verify-ipc` checks it against pyarrow both ways.
+- `arrow_mlake.flatbuf`: the FlatBuffers builder from flight.mojo, and a
+  bounds-checked `FlatReader`.
+
 ## [0.1.2] - 2026-10-24
 
 ### Changed

@@ -1,6 +1,6 @@
 name = "arrow-mlake-mojo"
-version = "0.1.2"
-description = "Apache Arrow memory layout and C Data Interface in pure Mojo — a stopgap until marrow builds on Mojo 1.x"
-tags = ["arrow", "c-data-interface", "columnar", "ffi", "magmalake"]
+version = "0.2.0"
+description = "Apache Arrow memory layout, C Data Interface and IPC streams in pure Mojo — a stopgap until marrow builds on Mojo 1.x"
+tags = ["arrow", "c-data-interface", "ipc", "columnar", "ffi", "magmalake"]
 # other tins this one depends on; omit if none
 tins = ["memory-region-mojo"]
