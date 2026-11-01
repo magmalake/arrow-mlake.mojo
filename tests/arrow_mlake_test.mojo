@@ -97,6 +97,7 @@ from arrow_mlake import (
     store_u64,
     unit_name,
 )
+from std.memory import bitcast
 from std.testing import (
     TestSuite,
     assert_equal,
@@ -1083,6 +1084,46 @@ def test_export_shared_refuses_a_nested_column() raises:
         _ = export_shared(
             arena, roots, names, String("/tmp/arrow_mlake_nested_test.arrow")
         )
+
+
+def _int_array(id: Int, width: Int, values: List[Int64]) -> ArrayData:
+    """`values`, little-endian at `width` bytes, as an array of type `id`."""
+    var a = ArrayData(ArrowType(id), String("v"))
+    for v in values:
+        var u = UInt64(bitcast[DType.uint64](v))
+        for k in range(width):
+            a.values.append(UInt8((u >> UInt64(8 * k)) & 0xFF))
+    a.length = len(values)
+    return a^
+
+
+def _check_width(id: Int, width: Int, values: List[Int64]) raises:
+    var got = array_i64(_int_array(id, width, values))
+    assert_equal(len(got[0]), len(values))
+    for i in range(len(values)):
+        assert_equal(got[0][i], values[i])
+        assert_true(got[1][i])
+
+
+def test_array_i64_every_width_and_sign() raises:
+    """Every integer width, signed and not, at the edges of its range, and a
+    column with nulls next to one without."""
+    _check_width(AT_INT8, 1, [0, 1, -1, 127, -128])
+    _check_width(AT_UINT8, 1, [0, 1, 255])
+    _check_width(AT_INT16, 2, [0, -2, 32767, -32768])
+    _check_width(AT_UINT16, 2, [0, 65535])
+    _check_width(AT_INT32, 4, [0, -3, 2147483647, -2147483648])
+    _check_width(AT_UINT32, 4, [0, 4294967295])
+    _check_width(
+        AT_INT64, 8, [0, -4, 9223372036854775807, -9223372036854775807 - 1]
+    )
+    var with_nulls = _int_array(AT_INT32, 4, [5, 6, 7])
+    with_nulls.validity = [0b101]
+    with_nulls.null_count = 1
+    var got = array_i64(with_nulls)
+    assert_true(got[1][0])
+    assert_false(got[1][1])
+    assert_true(got[1][2])
 
 
 def main() raises:
