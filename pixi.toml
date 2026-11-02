@@ -2,7 +2,7 @@
 authors = ["Marius S <39998+winding-lines@users.noreply.github.com>"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 name = "arrow-mlake.mojo"
-version = "0.2.0"
+version = "0.2.1"
 description = "The Apache Arrow memory layout, the C Data Interface and IPC streams, in pure Mojo — a stopgap until marrow builds on Mojo 1.x."
 preview = ["pixi-build"]
 platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
@@ -53,7 +53,7 @@ verify-ipc = { cmd = "bash tools/verify_ipc.sh", depends-on = ["ipc-roundtrip"] 
 # `from arrow_mlake import …`.
 [package]
 name = "arrow-mlake-mojo"
-version = "0.2.0"
+version = "0.2.1"
 
 [package.build]
 backend = { name = "pixi-build-mojo", version = "0.*" }
@@ -68,14 +68,14 @@ mojo-compiler = "==1.2.0"
 # The export block is a `Bump` over a `Region` now. Declared here as well as on
 # the include path, because a consumer taking the built package needs the
 # tin's .mojoc on its own import path.
-memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "91ff4418b44a89f9354e7d32633e9b11ad365dfd" }
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "40068c4f95ea659e9b78aa91ced45420b07e3e6e" }
 
 [package.build-dependencies]
 mojo-compiler = "==1.2.0"
 
 [package.run-dependencies]
 mojo-compiler = ">=1.2.0,<2"
-memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "91ff4418b44a89f9354e7d32633e9b11ad365dfd" }
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "40068c4f95ea659e9b78aa91ced45420b07e3e6e" }
 
 [feature.nightly.dependencies]
 modular = ">=26.8.0.dev2026102305,<28"
