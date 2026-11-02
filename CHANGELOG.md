@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-02
+
+### Changed
+
+- `array_i64` and the validity copy use typed loads instead of per-row bit
+  reads (#14).
+- Built against memory-region-mojo 0.1.1, the version the registry serves.
+  0.2.0 pinned an earlier memory-region commit, so a consumer resolving both
+  from the registry got two memory-region records.
+
 ## [0.2.0] - 2026-10-31
 
 ### Added
