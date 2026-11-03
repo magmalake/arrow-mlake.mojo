@@ -28,9 +28,10 @@ Seven modules, and no dependencies on anything but `std`:
 * `arrow_mlake.carrow_stream` — `export_stream`, the outbound half of that:
   a sequence of batches as one `ArrowArrayStream` a consumer pulls from.
 * `arrow_mlake.batch` — `RecordBatch`, a run of rows as one array per column.
-* `arrow_mlake.ipc` — the Arrow IPC stream format: `IpcWriter` and
-  `read_ipc_stream`, batches to bytes and back, for files, sockets and shared
-  mappings. `arrow_mlake.flatbuf` is the FlatBuffers builder and reader under
+* `arrow_mlake.ipc` — the Arrow IPC stream and file formats: `IpcWriter`,
+  `read_ipc_stream` and `read_ipc_file` (Feather v2 too), batches to bytes
+  and back, for files, sockets and shared mappings, with compressed bodies
+  through a caller's `IpcCodecs`. `arrow_mlake.flatbuf` is the FlatBuffers builder and reader under
   it.
 
 **This tin is a stopgap.** The community Arrow implementation for Mojo is
@@ -129,9 +130,14 @@ from arrow_mlake.carrow_import import (
 )
 from arrow_mlake.carrow_stream import export_stream, export_stream_of
 from arrow_mlake.ipc import (
+    LZ4_FRAME,
+    ZSTD,
+    IpcCodecs,
     IpcStream,
     IpcWriter,
+    NoCodecs,
     encode_schema_message,
+    read_ipc_file,
     read_ipc_stream,
     write_ipc_stream,
 )

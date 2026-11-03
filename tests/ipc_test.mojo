@@ -12,9 +12,13 @@ from build_arrays import SAMPLE_ROWS, int64_array, sample_arena, utf8_array
 from carrow_check import assert_preorder, assert_same_array
 from arrow_mlake import (
     AT_INT64,
+    LZ4_FRAME,
+    ZSTD,
     ArrayArena,
+    IpcCodecs,
     IpcWriter,
     RecordBatch,
+    read_ipc_file,
     read_ipc_stream,
     write_ipc_stream,
 )
@@ -138,6 +142,111 @@ def test_garbage_metadata_is_rejected_not_followed() raises:
         junk.append(0xFF)
     with assert_raises(contains="flatbuf"):
         _ = read_ipc_stream(Span(junk))
+
+
+struct ToyRle(IpcCodecs):
+    """Run-length pairs (count, byte): zeros shrink, varied bytes grow, so a
+    batch has buffers stored both compressed and as they are. Only
+    `LZ4_FRAME` is accepted, to see the codec number arrive."""
+
+    @staticmethod
+    def compress(codec: Int, data: Span[UInt8, _]) raises -> List[UInt8]:
+        if codec != LZ4_FRAME:
+            raise Error("toy: no codec ", codec)
+        var out = List[UInt8]()
+        var i = 0
+        while i < len(data):
+            var j = i
+            while j < len(data) and j - i < 255 and data[j] == data[i]:
+                j += 1
+            out.append(UInt8(j - i))
+            out.append(data[i])
+            i = j
+        return out^
+
+    @staticmethod
+    def decompress(
+        codec: Int, data: Span[UInt8, _], size: Int
+    ) raises -> List[UInt8]:
+        if codec != LZ4_FRAME:
+            raise Error("toy: no codec ", codec)
+        var out = List[UInt8]()
+        for k in range(0, len(data), 2):
+            for _ in range(Int(data[k])):
+                out.append(data[k + 1])
+        return out^
+
+
+def _compressed_stream(b: RecordBatch, batches: Int) raises -> List[UInt8]:
+    var w = IpcWriter(b)
+    for _ in range(batches):
+        w.write[ToyRle](b, codec=LZ4_FRAME)
+    return w^.finish()
+
+
+def test_compressed_batches_round_trip() raises:
+    var b = sample_batch()
+    var bytes = _compressed_stream(b, 2)
+    var s = read_ipc_stream[ToyRle](Span(bytes))
+    assert_equal(len(s.batches), 2)
+    for i in range(2):
+        _assert_same_batch(b, s.batches[i], String("compressed ", i))
+    # Compression shrank the stream: the sample's bitmaps and offsets are
+    # mostly zeros.
+    assert_true(len(bytes) < len(write_ipc_stream([b.copy(), b.copy()])))
+
+
+def test_a_compressed_stream_needs_a_codec() raises:
+    var bytes = _compressed_stream(sample_batch(), 1)
+    with assert_raises(contains="compressed (LZ4_FRAME)"):
+        _ = read_ipc_stream(Span(bytes))
+
+
+def test_writing_a_codec_the_codecs_lack_is_refused() raises:
+    var b = sample_batch()
+    var w = IpcWriter(b)
+    with assert_raises(contains="toy: no codec 1"):
+        w.write[ToyRle](b, codec=ZSTD)
+
+
+def _as_file(stream: List[UInt8]) -> List[UInt8]:
+    """An IPC file around `stream`: magic, padding, the stream, a stand-in
+    footer, its length, the magic again."""
+    var out = List[UInt8]()
+    for c in "ARROW1".as_bytes():
+        out.append(c)
+    out.append(0)
+    out.append(0)
+    for x in stream:
+        out.append(x)
+    var footer: List[UInt8] = [1, 2, 3, 4, 5, 6, 7, 8]
+    for x in footer:
+        out.append(x)
+    out.append(8)
+    out.append(0)
+    out.append(0)
+    out.append(0)
+    for c in "ARROW1".as_bytes():
+        out.append(c)
+    return out^
+
+
+def test_an_ipc_file_is_read_through_its_stream() raises:
+    var b = sample_batch()
+    var plain = _as_file(write_ipc_stream([b.copy()]))
+    var f = read_ipc_file(Span(plain))
+    assert_equal(len(f.batches), 1)
+    _assert_same_batch(b, f.batches[0], "file")
+    var packed = _as_file(_compressed_stream(b, 3))
+    var g = read_ipc_file[ToyRle](Span(packed))
+    assert_equal(len(g.batches), 3)
+    _assert_same_batch(b, g.batches[2], "compressed file")
+
+
+def test_a_stream_is_not_a_file() raises:
+    var bytes = write_ipc_stream([sample_batch()])
+    with assert_raises(contains="ARROW1"):
+        _ = read_ipc_file(Span(bytes))
 
 
 def main() raises:
