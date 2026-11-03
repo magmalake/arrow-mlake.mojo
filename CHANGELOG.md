@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **IPC files and compressed batches.** `read_ipc_file` reads the Arrow IPC
+  file format, Feather v2 included. Record batch bodies compressed per buffer
+  (LZ4 frames or Zstandard, as pyarrow writes them) are read through an
+  `IpcCodecs` type the caller supplies, and `IpcWriter.write[C](batch,
+  codec=...)` writes them. arrow-mlake still links no codec: the default,
+  `NoCodecs`, refuses a compressed batch and names its codec.
+
 ## [0.2.1] - 2026-11-02
 
 ### Changed

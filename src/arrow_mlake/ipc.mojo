@@ -37,9 +37,33 @@ list, struct and map, nested to any depth. Fields carry their nullability
 and two metadata keys, `ARROW:extension:name` and `PARQUET:field_id`, which
 is where `ArrowType.extension` and `ArrayData.field_id` travel.
 
-Dictionary encoding, compression, unions, run-end encoding, the view types
-and the IPC *file* format are not implemented; a stream that uses them is
-rejected with an error that names the feature.
+## Files and compression
+
+`read_ipc_file` reads the IPC *file* format, which Feather v2 is too: the
+stream between an `ARROW1` magic and a footer. The footer only indexes the
+batches the stream already holds in order, so it isn't read.
+
+Record batch bodies may be compressed per buffer, LZ4 frames or Zstandard,
+as `pyarrow.ipc.IpcWriteOptions(compression=...)` writes them. arrow-mlake
+links no codec: the caller passes one as an `IpcCodecs` type, and the default,
+`NoCodecs`, refuses a compressed batch with an error saying so.
+
+```mojo
+struct Lz4(IpcCodecs):            # with lz4-mojo
+    @staticmethod
+    def compress(codec: Int, data: Span[UInt8, _]) raises -> List[UInt8]:
+        return compress_frame(data)
+    @staticmethod
+    def decompress(codec: Int, data: Span[UInt8, _], size: Int) raises -> List[UInt8]:
+        return decompress_frame(data)
+
+var f = read_ipc_file[Lz4](Span(bytes))
+w.write[Lz4](batch, codec=LZ4_FRAME)
+```
+
+Dictionary encoding, unions, run-end encoding and the view types are not
+implemented; a stream that uses them is rejected with an error that names
+the feature.
 
 A validity bitmap is only written when an array has nulls; otherwise the
 buffer is empty, which the format allows. Reading copies each buffer into
@@ -160,6 +184,75 @@ def _u32_at(data: Span[UInt8, _], pos: Int) -> Int:
     for i in range(4):
         v |= Int(data[pos + i]) << (8 * i)
     return v
+
+
+def _i64_at(data: Span[UInt8, _], pos: Int) -> Int:
+    var v: UInt64 = 0
+    for i in range(8):
+        v |= UInt64(data[pos + i]) << UInt64(8 * i)
+    return Int(v.cast[DType.int64]())
+
+
+def _append_i64(mut out: List[UInt8], v: Int):
+    var u = UInt64(Int64(v).cast[DType.uint64]())
+    for i in range(8):
+        out.append(UInt8((u >> UInt64(i * 8)) & 0xFF))
+
+
+# ── compression ────────────────────────────────────────────────────────────
+
+comptime LZ4_FRAME = 0
+"""`BodyCompression.codec`: each buffer is one LZ4 frame."""
+comptime ZSTD = 1
+"""`BodyCompression.codec`: each buffer is one Zstandard frame."""
+
+
+def codec_name(codec: Int) -> String:
+    if codec == LZ4_FRAME:
+        return "LZ4_FRAME"
+    if codec == ZSTD:
+        return "ZSTD"
+    return String("codec ", codec)
+
+
+trait IpcCodecs:
+    """The compression a record batch body uses, supplied by the caller so
+    arrow-mlake links no codec. `codec` is `LZ4_FRAME` or `ZSTD`; an
+    implementation raises for one it doesn't have."""
+
+    @staticmethod
+    def compress(codec: Int, data: Span[UInt8, _]) raises -> List[UInt8]:
+        """`data` as one compressed frame."""
+        ...
+
+    @staticmethod
+    def decompress(
+        codec: Int, data: Span[UInt8, _], size: Int
+    ) raises -> List[UInt8]:
+        """The `size` bytes one compressed frame holds."""
+        ...
+
+
+struct NoCodecs(IpcCodecs):
+    """No compression: the default, which refuses compressed batches."""
+
+    @staticmethod
+    def compress(codec: Int, data: Span[UInt8, _]) raises -> List[UInt8]:
+        raise Error(
+            "ipc: writing ",
+            codec_name(codec),
+            " batches needs an IpcCodecs that has it",
+        )
+
+    @staticmethod
+    def decompress(
+        codec: Int, data: Span[UInt8, _], size: Int
+    ) raises -> List[UInt8]:
+        raise Error(
+            "ipc: the record batches are compressed (",
+            codec_name(codec),
+            "); pass an IpcCodecs that has it",
+        )
 
 
 def _is_binary_like(id: Int) -> Bool:
@@ -495,7 +588,34 @@ def _write_array(mut body: _Body, arena: ArrayArena, node: Int) raises:
         _write_array(body, arena, c)
 
 
-def _record_batch_message(length: Int, body: _Body) raises -> List[UInt8]:
+def _compress_body[C: IpcCodecs](mut body: _Body, codec: Int) raises:
+    """Replaces each buffer with its compressed form: its length as an
+    int64, then the frame, or -1 and the bytes when compressing doesn't make
+    them smaller."""
+    var out = List[UInt8]()
+    var spans = List[Int]()
+    for i in range(len(body.buffers) // 2):
+        var off = body.buffers[2 * i]
+        var n = body.buffers[2 * i + 1]
+        var at = len(out)
+        if n > 0:
+            var packed = C.compress(codec, Span(body.bytes)[off : off + n])
+            if len(packed) < n:
+                _append_i64(out, n)
+                _append_raw(out, packed.unsafe_ptr(), len(packed))
+            else:
+                _append_i64(out, -1)
+                _append_raw(out, body.bytes.unsafe_ptr().unsafe_offset(off), n)
+        spans.append(at)
+        spans.append(len(out) - at)
+        _zero_to(out, _pad8(len(out)))
+    body.bytes = out^
+    body.buffers = spans^
+
+
+def _record_batch_message(
+    length: Int, body: _Body, codec: Int = -1
+) raises -> List[UInt8]:
     var b = FlatBufferBuilder()
     # `buffers` and `nodes` are vectors of structs, stored inline and back
     # to front.
@@ -511,11 +631,19 @@ def _record_batch_message(length: Int, body: _Body) raises -> List[UInt8]:
         b.prepend_i64(body.nodes[2 * i + 1])
         b.prepend_i64(body.nodes[2 * i])
     var nodes_vec = b.end_vector()
+    var compression = 0
+    if codec >= 0:
+        # BodyCompression { codec, method = BUFFER }
+        b.start_table(2)
+        b.add_u8(0, UInt8(codec))
+        compression = b.end_table()
     # RecordBatch { length, nodes, buffers, compression, variadic... }
     b.start_table(5)
     b.add_i64(0, length)
     b.add_offset(1, nodes_vec)
     b.add_offset(2, buffers_vec)
+    if compression:
+        b.add_offset(3, compression)
     var rb = b.end_table()
     return _message(b, _H_RECORD_BATCH, rb, len(body.bytes))
 
@@ -550,7 +678,11 @@ struct IpcWriter(Movable):
             self._types.append(schema.type(i))
         _frame(self._out, encode_schema_message(schema), List[UInt8]())
 
-    def write(mut self, batch: RecordBatch) raises:
+    def write[
+        C: IpcCodecs = NoCodecs
+    ](mut self, batch: RecordBatch, codec: Int = -1) raises:
+        """Writes one batch; with `codec` (`LZ4_FRAME` or `ZSTD`), its body
+        compressed per buffer by `C`."""
         if batch.num_columns() != len(self._types):
             raise Error(
                 "ipc: batch has ",
@@ -580,7 +712,9 @@ struct IpcWriter(Movable):
                     batch.num_rows,
                 )
             _write_array(body, batch.arena, batch.roots[i])
-        var metadata = _record_batch_message(batch.num_rows, body)
+        if codec >= 0:
+            _compress_body[C](body, codec)
+        var metadata = _record_batch_message(batch.num_rows, body, codec)
         _frame(self._out, metadata, body.bytes)
 
     def finish(deinit self) -> List[UInt8]:
@@ -756,12 +890,16 @@ struct _Cursor:
     var buffers: Int
     var node: Int
     var buffer: Int
+    var spans: List[Int]
+    """(offset, length) pairs into a decompressed body, flattened; empty
+    when the body is read as it is."""
 
     def __init__(out self, nodes: Int, buffers: Int):
         self.nodes = nodes
         self.buffers = buffers
         self.node = 0
         self.buffer = 0
+        self.spans = List[Int]()
 
 
 def _next_buffer(
@@ -769,10 +907,16 @@ def _next_buffer(
 ) raises -> Tuple[Int, Int]:
     if c.buffer >= r.vector_len(c.buffers):
         raise Error("ipc: a record batch has too few buffers")
-    var p = r.vector_struct(c.buffers, c.buffer, 16)
+    var off: Int
+    var n: Int
+    if len(c.spans):
+        off = c.spans[2 * c.buffer]
+        n = c.spans[2 * c.buffer + 1]
+    else:
+        var p = r.vector_struct(c.buffers, c.buffer, 16)
+        off = r.i64(p)
+        n = r.i64(p + 8)
     c.buffer += 1
-    var off = r.i64(p)
-    var n = r.i64(p + 8)
     if off < 0 or n < 0 or off + n > body_len:
         raise Error("ipc: a buffer runs past the message body")
     return (off, n)
@@ -787,6 +931,51 @@ def _copy_bytes(
         )
     var out = List[UInt8]()
     _append_raw(out, body.unsafe_ptr().unsafe_offset(buf[0]), need)
+    return out^
+
+
+def _decompress_body[
+    C: IpcCodecs
+](
+    r: FlatReader, mut c: _Cursor, body: Span[UInt8, _], codec: Int
+) raises -> List[UInt8]:
+    """Every buffer of a compressed body, decompressed into one new body;
+    `c.spans` says where each landed. A compressed buffer is its
+    uncompressed length as an int64, then the frame; a length of -1 means
+    the bytes that follow weren't compressed."""
+    var out = List[UInt8]()
+    for i in range(r.vector_len(c.buffers)):
+        var p = r.vector_struct(c.buffers, i, 16)
+        var off = r.i64(p)
+        var n = r.i64(p + 8)
+        if off < 0 or n < 0 or off + n > len(body):
+            raise Error("ipc: a buffer runs past the message body")
+        var at = len(out)
+        if n > 0:
+            if n < 8:
+                raise Error("ipc: a compressed buffer has no length prefix")
+            var size = _i64_at(body, off)
+            if size == -1:
+                _append_raw(
+                    out, body.unsafe_ptr().unsafe_offset(off + 8), n - 8
+                )
+            elif size < 0:
+                raise Error("ipc: a compressed buffer's length is ", size)
+            else:
+                var plain = C.decompress(codec, body[off + 8 : off + n], size)
+                if len(plain) != size:
+                    raise Error(
+                        "ipc: a ",
+                        codec_name(codec),
+                        " buffer held ",
+                        len(plain),
+                        " bytes, not ",
+                        size,
+                    )
+                _append_raw(out, plain.unsafe_ptr(), size)
+        c.spans.append(at)
+        c.spans.append(len(out) - at)
+        _zero_to(out, _pad8(len(out)))
     return out^
 
 
@@ -916,8 +1105,11 @@ struct IpcStream(Movable):
         self.batches = batches^
 
 
-def read_ipc_stream(data: Span[UInt8, _]) raises -> IpcStream:
-    """Reads a whole Arrow IPC stream. Every buffer is copied out of `data`."""
+def read_ipc_stream[
+    C: IpcCodecs = NoCodecs
+](data: Span[UInt8, _]) raises -> IpcStream:
+    """Reads a whole Arrow IPC stream. Every buffer is copied out of `data`.
+    Compressed batches are decompressed with `C`."""
     var fields = List[_Field]()
     var roots = List[Int]()
     var have_schema = False
@@ -963,15 +1155,29 @@ def read_ipc_stream(data: Span[UInt8, _]) raises -> IpcStream:
         elif kind == _H_RECORD_BATCH:
             if not have_schema:
                 raise Error("ipc: a record batch comes before the schema")
-            if r.get_ref(header, 3) != 0:
-                raise Error("ipc: compressed record batches are not supported")
             var c = _Cursor(r.get_ref(header, 1), r.get_ref(header, 2))
             var batch = RecordBatch()
             batch.num_rows = r.get_i64(header, 0)
-            for root in roots:
-                batch.roots.append(
-                    _read_array(fields, root, r, c, body, batch.arena)
+            var compression = r.get_ref(header, 3)
+            if compression == 0:
+                for root in roots:
+                    batch.roots.append(
+                        _read_array(fields, root, r, c, body, batch.arena)
+                    )
+            else:
+                # BodyCompression { codec, method }; BUFFER (0) is the only
+                # method the format defines.
+                if r.get_u8(compression, 1) != 0:
+                    raise Error("ipc: only per-buffer compression is defined")
+                var plain = _decompress_body[C](
+                    r, c, body, r.get_u8(compression, 0)
                 )
+                for root in roots:
+                    batch.roots.append(
+                        _read_array(
+                            fields, root, r, c, Span(plain), batch.arena
+                        )
+                    )
             batches.append(batch^)
         elif kind == _H_DICTIONARY_BATCH:
             raise Error("ipc: dictionary batches are not supported")
@@ -983,3 +1189,23 @@ def read_ipc_stream(data: Span[UInt8, _]) raises -> IpcStream:
     for root in roots:
         schema.roots.append(_empty_array(fields, root, schema.arena))
     return IpcStream(schema^, batches^)
+
+
+def read_ipc_file[
+    C: IpcCodecs = NoCodecs
+](data: Span[UInt8, _]) raises -> IpcStream:
+    """Reads an Arrow IPC file, Feather v2 included: `ARROW1`, padding to 8
+    bytes, the stream, its footer, the footer's length and `ARROW1` again.
+    The stream holds every batch in order, so the footer isn't read."""
+    var n = len(data)
+    if n < 12 or not _is_magic(data, 0) or not _is_magic(data, n - 6):
+        raise Error("ipc: not an Arrow IPC file (no ARROW1 magic)")
+    return read_ipc_stream[C](data[8:n])
+
+
+def _is_magic(data: Span[UInt8, _], at: Int) -> Bool:
+    var m = "ARROW1".as_bytes()
+    for i in range(6):
+        if data[at + i] != m[i]:
+            return False
+    return True
