@@ -46,6 +46,7 @@ from arrow_mlake import (
     bit_set,
     export_c,
 )
+from arrow_mlake.carrow import ArrayReleaseFn
 from arrow_mlake.carrow_import import (
     StreamGetLastErrorFn,
     StreamGetNextFn,
@@ -92,13 +93,8 @@ def assert_same_array(
     rroot: Int,
     label: StringSlice,
 ) raises:
-    """Two array trees, compared on everything the C interface carries.
-
-    `field_id` is deliberately not compared: the export writes no
-    `PARQUET:field_id` metadata, so a round trip through our own exporter
-    drops it. The importer reads the key when a foreign producer writes it,
-    which is asserted separately.
-    """
+    """Two array trees, compared on everything the C interface carries,
+    `field_id` (as `PARQUET:field_id` metadata) included."""
     var stack_l: List[Int] = [lroot]
     var stack_r: List[Int] = [rroot]
     var visited = 0
@@ -120,6 +116,8 @@ def assert_same_array(
             _fail(at, String("name ", a.name, " became ", b.name))
         if a.nullable != b.nullable:
             _fail(at, "nullability changed")
+        if a.field_id != b.field_id:
+            _fail(at, String("field_id ", a.field_id, " became ", b.field_id))
         if a.length != b.length:
             _fail(at, String("length ", a.length, " became ", b.length))
         if a.null_count != b.null_count:
@@ -441,3 +439,71 @@ def word(addr: Int, i: Int) -> Int64:
 
 def child_array(array: Int, k: Int) -> Int:
     return Int(_words(Int(_words(array)[unsafe_offset=6]))[unsafe_offset=k])
+
+
+# ── a producer that counts its releases ────────────────────────────────────
+
+
+def _counting_release(p: Pointer[CArrowArray, MutUntrackedOrigin]) abi("C"):
+    """Bump the counter, release the export underneath, mark released."""
+    var rec = _words(p[].private_data)
+    rec[unsafe_offset=1] += 1
+    release_c_array(Int(rec[unsafe_offset=0]))
+    p[].release = 0
+
+
+struct CountedPair(Movable):
+    """An exported pair whose root `ArrowArray` counts its `release` calls.
+
+    The root is a copy of `export_c`'s root in storage of its own, with the
+    release swapped for `_counting_release`; children and buffers are the
+    export's. `releases()` stays readable after the release, so a test can
+    assert the consumer called it exactly once.
+    """
+
+    var array: Int
+    var schema: Int
+    var _rec: Int
+
+    def __init__(out self, arena: ArrayArena, root: Int) raises:
+        var pair = exported_pair(arena, root)
+        # Both roots are moved into storage of our own, as a consumer's would
+        # be: `export_c`'s release frees the block its root lives in, so the
+        # export's own root cannot be checked for "released" afterwards.
+        self.schema = Int(unsafe_alloc[Int64](9))
+        for i in range(9):
+            _words(self.schema)[unsafe_offset=i] = _words(pair[1])[
+                unsafe_offset=i
+            ]
+        self.array = Int(unsafe_alloc[Int64](10))
+        self._rec = Int(unsafe_alloc[Int64](2))
+        _words(self._rec)[unsafe_offset=0] = Int64(pair[0])
+        _words(self._rec)[unsafe_offset=1] = 0
+        for i in range(10):
+            _words(self.array)[unsafe_offset=i] = _words(pair[0])[
+                unsafe_offset=i
+            ]
+        _words(self.array)[unsafe_offset=9] = Int64(self._rec)
+        var slot = Pointer[ArrayReleaseFn, MutUntrackedOrigin](
+            unsafe_from_address=self.array + 64
+        )
+        slot[] = _counting_release
+
+    def __init__(out self, *, deinit move: Self):
+        self.array = move.array
+        self.schema = move.schema
+        self._rec = move._rec
+
+    def releases(self) -> Int:
+        return Int(_words(self._rec)[unsafe_offset=1])
+
+    def inner(self) -> Int:
+        """The export's own root, whose buffers the import should borrow."""
+        return Int(_words(self._rec)[unsafe_offset=0])
+
+    def __deinit__(deinit self):
+        release_c_array(self.array)
+        release_c_schema(self.schema)
+        _words(self.array).unsafe_free()
+        _words(self.schema).unsafe_free()
+        _words(self._rec).unsafe_free()

@@ -21,6 +21,7 @@ from build_arrays import (
     uuid_array,
 )
 from carrow_check import (
+    CountedPair,
     StreamSource,
     assert_preorder,
     assert_same_array,
@@ -67,6 +68,7 @@ from arrow_mlake import (
     ArrowType,
     ImportedArray,
     ImportedStream,
+    is_borrowed,
     export_stream,
     export_stream_of,
     RecordBatch,
@@ -753,9 +755,7 @@ def test_import_batch_unwraps_a_struct() raises:
     """A struct array becomes a `RecordBatch`, one column per field."""
     var built = make_struct_arena(7, 500)
     var pair = exported_pair(built[0], built[1])
-    var owned = ImportedArray(pair[0], pair[1])
-    var batch = owned.into_batch()
-    owned.release()
+    var batch = ImportedArray(pair[0], pair[1]).into_batch()
     assert_equal(batch.num_columns(), 1)
     assert_equal(batch.num_rows, 7)
     assert_equal(batch.name(0), "n")
@@ -1124,6 +1124,229 @@ def test_array_i64_every_width_and_sign() raises:
     assert_true(got[1][0])
     assert_false(got[1][1])
     assert_true(got[1][2])
+
+
+# ── field ids ──────────────────────────────────────────────────────────────
+
+
+def _number_fields(mut arena: ArrayArena, root: Int, mut next: Int32):
+    """Give every node under `root` a field id, in pre-order from `next`."""
+    var stack: List[Int] = [root]
+    while len(stack):
+        var n = stack.pop()
+        arena.nodes[n].field_id = next
+        next += 1
+        ref kids = arena.nodes[n].children
+        for k in range(len(kids) - 1, -1, -1):
+            stack.append(kids[k])
+
+
+def test_field_ids_round_trip_nested_ones_included() raises:
+    """`PARQUET:field_id` goes out with every field and comes back.
+
+    The corpus has list elements, struct children, map entries with their
+    keys and values, and an extension column whose metadata now carries two
+    keys; `assert_same_array` compares `field_id` on every node.
+    """
+    var built = sample_arena()
+    var next = Int32(1)
+    for c in range(len(built[1])):
+        _number_fields(built[0], built[1][c], next)
+    for c in range(len(built[1])):
+        var root = built[1][c]
+        _round_trip(built[0], root, String("ids.", built[0].nodes[root].name))
+        var pair = exported_pair(built[0], root)
+        var owned = ImportedArray(pair[0], pair[1])
+        var back = ArrayArena()
+        var got = owned^.into_arena(back)
+        assert_same_array(built[0], root, back, got, "ids zero-copy")
+    # The metadata itself, as a foreign consumer reads it.
+    var map_root = built[1][len(built[1]) - 1]
+    for c in range(len(built[1])):
+        if built[0].nodes[built[1][c]].type.id == AT_MAP:
+            map_root = built[1][c]
+    var e = export_c(built[0], map_root)
+    var s = e.schema
+    var entries = Int(word(Int(word(s, 5)), 0))
+    var key = Int(word(Int(word(entries, 5)), 0))
+    assert_equal(
+        parquet_field_id(Int(word(s, 2))),
+        built[0].nodes[map_root].field_id,
+    )
+    assert_equal(
+        parquet_field_id(Int(word(key, 2))),
+        built[0].nodes[built[0].nodes[map_root].children[0]].field_id + 1,
+    )
+
+
+def test_a_field_without_an_id_writes_no_metadata() raises:
+    var arena = ArrayArena()
+    var root = arena.add(int64_array(String("n"), 4, 0, 0))
+    var e = export_c(arena, root)
+    assert_equal(word(e.schema, 2), 0)
+
+
+# ── zero-copy import ───────────────────────────────────────────────────────
+
+
+def _id_and_name(rows: Int) raises -> Tuple[ArrayArena, Int]:
+    """`struct<id: int64 (nulls), name: utf8, tags: list<utf8>>`."""
+    var arena = ArrayArena()
+    var ci = arena.add(int64_array(String("id"), rows, 10, 4))
+    var cn = arena.add(utf8_array(String("name"), rows, False))
+    var cl = add_list(arena, String("tags"), rows, False)
+    var row = ArrayData(ArrowType(AT_STRUCT), String("row"))
+    row.length = rows
+    row.nullable = False
+    row.children = [ci, cn, cl]
+    var r = arena.add(row^)
+    return (arena^, r)
+
+
+def test_an_owning_import_borrows_the_producers_buffers() raises:
+    """`into_batch` keeps the buffers where they are and releases once."""
+    var built = _id_and_name(9)
+    var want = built[0].copy()
+    var pair = CountedPair(built[0], built[1])
+    var id_buf = buffer_address(child_array(pair.inner(), 0), 1)
+    var name_data = buffer_address(child_array(pair.inner(), 1), 2)
+    var batch = ImportedArray(pair.array, pair.schema).into_batch()
+    assert_equal(pair.releases(), 0)
+    ref id = batch.arena.nodes[batch.roots[0]]
+    assert_true(is_borrowed(id.values))
+    assert_true(is_borrowed(id.validity))
+    assert_equal(Int(id.values.unsafe_ptr()), id_buf)
+    ref name = batch.arena.nodes[batch.roots[1]]
+    assert_true(is_borrowed(name.offsets))
+    assert_equal(Int(name.values.unsafe_ptr()), name_data)
+    for c in range(3):
+        assert_same_array(
+            want,
+            want.nodes[built[1]].children[c],
+            batch.arena,
+            batch.roots[c],
+            "borrowed",
+        )
+    _ = batch^
+    assert_equal(pair.releases(), 1)
+
+
+def test_a_copy_of_a_borrowed_batch_owns_its_buffers() raises:
+    var built = _id_and_name(6)
+    var pair = CountedPair(built[0], built[1])
+    var batch = ImportedArray(pair.array, pair.schema).into_batch()
+    var copy = batch.copy()
+    var col = batch.roots[1]
+    _ = batch^
+    assert_equal(pair.releases(), 1)
+    assert_false(is_borrowed(copy.arena.nodes[col].values))
+    assert_false(Bool(copy.arena.nodes[col].foreign))
+    assert_equal(copy.column_str(1)[0][2], array_str(built[0].nodes[1])[0][2])
+
+
+def test_borrowed_arrays_moved_elsewhere_keep_the_producer_alive() raises:
+    """Grafting moves nodes, and their hold on the release with them."""
+    var built = _id_and_name(5)
+    var pair = CountedPair(built[0], built[1])
+    var back = ArrayArena()
+    var got = ImportedArray(pair.array, pair.schema).into_arena(back)
+    var other = ArrayArena()
+    var moved = other.graft(back, got)
+    _ = back^
+    assert_equal(pair.releases(), 0)
+    var have = array_i64(other.nodes[other.nodes[moved].children[0]])
+    assert_equal(have[0][0], 10)
+    _ = other^
+    assert_equal(pair.releases(), 1)
+
+
+def test_pushing_to_a_borrowed_list_moves_it_out_first() raises:
+    var built = _id_and_name(3)
+    var pair = CountedPair(built[0], built[1])
+    var inner_buf = buffer_address(child_array(pair.inner(), 0), 1)
+    var batch = ImportedArray(pair.array, pair.schema).into_batch()
+    ref id = batch.arena.nodes[batch.roots[0]]
+    id.values.append(7)
+    assert_false(is_borrowed(id.values))
+    assert_true(Int(id.values.unsafe_ptr()) != inner_buf)
+    assert_equal(len(id.values), 3 * 8 + 1)
+    _ = batch^
+    assert_equal(pair.releases(), 1)
+
+
+def test_an_import_that_fails_still_releases_once() raises:
+    var arena = ArrayArena()
+    var col = arena.add(int64_array(String("n"), 4, 0, 0))
+    var row = ArrayData(ArrowType(AT_STRUCT), String("row"))
+    row.length = 4
+    row.null_count = 1
+    bit_fill_valid(row.validity, 3)
+    row.children = [col]
+    var root = arena.add(row^)
+    var pair = CountedPair(arena, root)
+    with assert_raises(contains="nulls of its own"):
+        _ = ImportedArray(pair.array, pair.schema).into_batch()
+    assert_equal(pair.releases(), 1)
+
+
+def test_a_sliced_owning_import_borrows_what_it_can() raises:
+    """An offset keeps fixed-width values borrowed, and rebases offsets."""
+    var rows = 12
+    var arena = ArrayArena()
+    var ints = arena.add(int64_array(String("i64"), rows, -5, 3))
+    var strs = arena.add(utf8_array(String("s"), rows, False))
+    var want_i64 = array_i64(arena.nodes[ints])
+    var want_str = array_str(arena.nodes[strs])
+    for skip in [1, 3, 8]:
+        var pair = CountedPair(arena, ints)
+        set_word(pair.array, 2, Int64(skip))
+        set_word(pair.array, 0, Int64(rows - skip))
+        set_word(pair.array, 1, -1)
+        var back = ArrayArena()
+        var got = ImportedArray(pair.array, pair.schema).into_arena(back)
+        assert_true(is_borrowed(back.nodes[got].values))
+        assert_equal(is_borrowed(back.nodes[got].validity), skip % 8 == 0)
+        var have = array_i64(back.nodes[got])
+        for i in range(rows - skip):
+            assert_equal(have[1][i], want_i64[1][i + skip])
+            if have[1][i]:
+                assert_equal(have[0][i], want_i64[0][i + skip])
+        _ = back^
+        assert_equal(pair.releases(), 1)
+
+        var pair2 = CountedPair(arena, strs)
+        set_word(pair2.array, 2, Int64(skip))
+        set_word(pair2.array, 0, Int64(rows - skip))
+        var back2 = ArrayArena()
+        var got2 = ImportedArray(pair2.array, pair2.schema).into_arena(back2)
+        # Offsets are borrowed only when the window's first one is 0.
+        assert_equal(
+            is_borrowed(back2.nodes[got2].offsets),
+            arena.nodes[strs].offsets[skip] == 0,
+        )
+        assert_true(is_borrowed(back2.nodes[got2].values))
+        assert_equal(back2.nodes[got2].offsets[0], 0)
+        var have2 = array_str(back2.nodes[got2])
+        for i in range(rows - skip):
+            assert_equal(have2[0][i], want_str[0][i + skip])
+        _ = back2^
+        assert_equal(pair2.releases(), 1)
+
+
+def test_stream_batches_outlive_the_stream() raises:
+    """A stream's batch borrows; it stays readable after the stream is gone."""
+    var src = StreamSource(3, 4, -1)
+    var stream = ImportedStream(src.address())
+    var first = stream.next()
+    var second = stream.next()
+    stream.release()
+    ref b = second.value()
+    assert_true(is_borrowed(b.arena.nodes[b.roots[0]].values))
+    assert_equal(b.column_i64(0)[0][0], Int64(100))
+    assert_equal(first.value().num_rows, 4)
+    _ = first^
+    _ = second^
+    src.free_stream_storage()
 
 
 def main() raises:

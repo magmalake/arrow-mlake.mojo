@@ -91,14 +91,14 @@ def am_import_roundtrip(
     """Import one array and export it straight back.
 
     pyarrow then compares the array it gets back with the one it sent, which
-    is the end-to-end check: every buffer had to survive being copied out of
+    is the end-to-end check: every buffer had to survive being borrowed from
     the producer's memory and written into ours in the layout the spec names.
     """
-    var owned = ImportedArray(array, schema)
     try:
+        # The owning import, which borrows pyarrow's buffers; the arena holds
+        # pyarrow's release until it is dropped, after the export has copied.
         var arena = ArrayArena()
-        var root = import_c(arena, array, schema)
-        owned.release()
+        var root = ImportedArray(array, schema).into_arena(arena)
         var e = export_c(arena, root)
         var raw = e.into_raw()
         var a = Pointer[UInt8, ImmUntrackedOrigin](unsafe_from_address=raw[0])
@@ -109,7 +109,6 @@ def am_import_roundtrip(
             schema_out[unsafe_offset=i] = s[unsafe_offset=i]
         return 0
     except:
-        owned.release()
         return -1
 
 

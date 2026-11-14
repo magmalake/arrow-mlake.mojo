@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Owning imports don't copy** (morca #454). `ImportedArray.into_batch` and
+  `into_arena` (which now consume the `ImportedArray`) and `ImportedStream.next`
+  borrow the producer's buffers and release the array once, when the last
+  array using them dies (`ArrayData.foreign`). Bools, mid-byte bitmaps and
+  non-zero-based offsets are still copied. 6.6 → 0.23 ns per row.
+- `export_c` writes `PARQUET:field_id`, nested fields included.
+
 ### Added
 
 - **IPC files and compressed batches.** `read_ipc_file` reads the Arrow IPC

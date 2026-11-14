@@ -18,6 +18,9 @@ lint = { cmd = "mojolint --lsp -I src -I tests -I ../memory-region.mojo/src src 
 lint-tools = { cmd = "mojolint --lsp -I src -I tests -I ../memory-region.mojo/src tools" }
 check = { depends-on = ["test", "lint", "lint-tools"] }
 
+# Per-row import cost, copying against borrowing (tools/bench_import.mojo).
+bench-import = { cmd = "mkdir -p build && mojo build -O3 tools/bench_import.mojo -I src -I ../memory-region.mojo/src -o build/bench-import && ./build/bench-import" }
+
 fmt = { cmd = "mojo format src tests tools" }
 # `mojo format` has no check mode in 1.1.0 — it rejects `--check` outright — so
 # the check is: format, then assert the tree did not move. It rewrites the

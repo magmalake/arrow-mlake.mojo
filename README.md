@@ -87,19 +87,23 @@ arena it came from and is safe to hand to a runtime that will release it
 whenever it likes. The root's `release` frees the lot; children carry a
 callback that only clears themselves, because the interface says a consumer
 releases the root and the root owns everything. Both callbacks are `abi("C")`.
+A field's extension name and `PARQUET:field_id` go out as schema metadata, on
+nested fields too, so ids survive a round trip.
 
 ### One array in
 
 ```mojo
 var arena = ArrayArena()
 var root = import_c(arena, array_addr, schema_addr)          # borrowing
-var batch = ImportedArray(array_addr, schema_addr).into_batch()  # owning
+var batch = ImportedArray(array_addr, schema_addr).into_batch()  # owning, no copy
 ```
 
 `import_c` **borrows**: it reads the pair and copies out of it, and releases
 nothing — the caller decides when. `ImportedArray` **owns**: constructing one
 asserts "this pair is mine now", and it calls the root release callbacks
-exactly once, on `release()` or at destruction.
+exactly once, on `release()` or at destruction. Its `into_batch` and
+`into_arena` import without copying and hand the array's release to the
+result (see below).
 
 Nodes land in the arena in DFS **pre-order**, which is the order the exporter
 walks on the way out, so `export → import → export` reproduces the arena's
@@ -122,8 +126,8 @@ LanceDB or ADBC binding needs. The end of the stream is a *released* array,
 which is the only signal the interface has for "no more"; `get_next` returning
 non-zero is a real error and `get_last_error`'s message is carried into the
 raise, because conflating the two turns a failed scan into a short one. Each
-batch is released as soon as it has been copied, so a long scan holds one
-batch of producer memory at a time rather than the whole stream.
+batch borrows its array's buffers and releases the array when the batch dies,
+so a scan holds as much producer memory as the batches it keeps.
 
 ### Arrow IPC streams
 
@@ -149,13 +153,28 @@ stream that uses them is refused with an error naming the feature. The reader
 bounds-checks every FlatBuffers offset and every buffer against the message
 body, and copies the buffers into the `ArrayData`, as the C import does.
 
-### Importing copies
+### Importing without copying
 
-`ArrayData` owns its buffers as `List[UInt8]`, so every buffer a producer hands
-over is copied into Mojo memory. The zero-copy alternative — an `ArrayData`
-that borrows a foreign pointer and keeps the producer's release callback alive
-behind it — changes the type every consumer reads, and is deliberately not what
-this does. On a 16-column, 65k-row batch the copy runs at memory-copy speed.
+When the release callback is ours (`ImportedArray.into_batch`/`into_arena`,
+`ImportedStream.next`), buffers stay in the producer's memory. Each borrowed
+`ArrayData` buffer is a capacity-0 `List` over the foreign bytes, and each node
+that borrows holds an `ArcPointer[ForeignBuffers]` (`ArrayData.foreign`) that
+calls the producer's `release` once, when the last such node is destroyed.
+
+* **Borrowed:** every fixed-width type, utf8/binary (large too), and lists,
+  maps and structs of those, sliced or not.
+* **Copied anyway:** bool values, a validity bitmap that starts mid-byte, and
+  offsets that don't start at zero or aren't aligned (they are rebased; the
+  values they index are still borrowed). `import_c` and `import_batch_c` only
+  borrow the pair, so they copy everything.
+* **Read-only:** writing an element writes the producer's buffer. Pushing to,
+  resizing or copying a borrowed list moves it into memory of its own first.
+* **Don't move a buffer out:** `node.values^` kept past `node` outlives the
+  release. `node.own_buffers()` or `node.copy()` first.
+
+For `struct<int64, utf8>` with short strings, importing costs 0.23 ns per row
+without copying, against 6.6 ns per row for the copy in 0.2.1
+(`tools/bench_import.mojo`, M4, a million rows).
 
 ### Nothing about a producer is trusted
 

@@ -21,13 +21,18 @@ struct ArrowArrayStream {
 That is what a scan returns, so it is the entry point a LanceDB or ADBC
 binding actually needs.
 
-**Importing copies.** `ArrayData` owns its buffers as `List[UInt8]`, so every
-buffer a producer hands over is copied into Mojo memory. The alternative — an
-`ArrayData` that borrows a foreign pointer and keeps the producer's release
-callback alive behind it — would be zero-copy but changes the type every
-consumer of `ArrayData` reads, so it is deliberately not what this does. On a
-16-column, 65k-row batch the copy runs at memory-copy speed, which is a
-rounding error next to decoding the same data out of a file format.
+**Owning imports don't copy; borrowing ones do.** When the release is ours
+(`ImportedArray.into_batch`/`into_arena`, `ImportedStream.next`), buffers stay
+in the producer's memory: each `ArrayData` list is a capacity-0 view
+(`arrow_mlake.arrow.borrowed_list`), and every node that borrows holds an
+`ArcPointer[ForeignBuffers]` that runs the producer's `release` once, when the
+last such node dies. Borrowed for all fixed-width types, utf8/binary (large
+too), and lists, maps and structs of those. Copied even then: bool values, a
+validity bitmap that starts mid-byte, and offsets that don't start at zero or
+are misaligned (rebased; the values are still borrowed). Imported arrays are
+read-only, since writing an element writes the producer's buffer; pushing to a
+list moves it into memory of its own first. `import_c` and `import_batch_c`
+only borrow the pair, so they copy.
 
 **Who releases what.** The C Data Interface makes the *consumer* responsible
 for the structs it is handed: it calls the root's `release`, which frees the
@@ -41,11 +46,11 @@ implements exactly that side of the convention:
 * `ImportedArray` **owns**. Constructing one asserts "this pair is mine now";
   it releases the root array and the root schema exactly once, on `release()`
   or on destruction, and `release()` is idempotent because it checks for the
-  null `release` pointer first.
-* `ImportedStream` owns the stream, the schema it pulled out of `get_schema`,
-  and every array `get_next` moves into it. Each array is released as soon as
-  its batch has been copied, so a long scan holds one batch of producer memory
-  at a time and not the whole stream.
+  null `release` pointer first. `into_batch` hands the array's release to the
+  batch instead.
+* `ImportedStream` owns the stream and the schema it pulled out of
+  `get_schema`. Each array `get_next` moves into it goes to its batch, which
+  releases it when the batch dies.
 
 **Nothing about a producer is trusted.** `n_buffers` is checked against the
 format string, `n_children` against the type, offsets for monotonicity and
@@ -58,11 +63,12 @@ is checked, and the limit is stated rather than papered over.
 ```mojo
 var arena = ArrayArena()
 var root = import_c(arena, array_addr, schema_addr)   # borrowing
-var batch = ImportedArray(array_addr, schema_addr).into_batch()  # owning
+var batch = ImportedArray(array_addr, schema_addr).into_batch()  # owning, no copy
 ```
 """
 
 from std.bit import pop_count
+from std.memory import ArcPointer, unsafe_memcpy
 from std.memory.alloc import unsafe_alloc
 
 from arrow_mlake.arrow import (
@@ -100,6 +106,8 @@ from arrow_mlake.arrow import (
     ArrayArena,
     ArrayData,
     ArrowType,
+    ForeignBuffers,
+    borrowed_list,
 )
 from arrow_mlake.carrow import (
     ARROW_FLAG_NULLABLE,
@@ -441,9 +449,8 @@ def parquet_field_id(metadata: Int) raises -> Int32:
     """`PARQUET:field_id` out of a C schema's metadata, or -1.
 
     Arrow's Parquet writers put the Iceberg/Parquet field id here as decimal
-    text, and this library's `ArrayData` has a slot for it. Our own exporter
-    does not write the key, so a round trip through it drops the id; a foreign
-    producer that does write it keeps it.
+    text, and this library's `ArrayData` has a slot for it; `export_c`
+    writes it back out, so ids survive a round trip.
     """
     if metadata == 0:
         return -1
@@ -487,11 +494,38 @@ def _copy_bytes(src: Int, at: Int, n: Int) -> List[UInt8]:
     if n <= 0 or src == 0:
         return out^
     out.resize(n, 0)
-    var p = _u8(src + at)
-    var d = out.unsafe_ptr()
-    for i in range(n):
-        d[unsafe_offset=i] = p[unsafe_offset=i]
+    unsafe_memcpy(dest=out.unsafe_ptr(), src=_u8(src + at), count=n)
     return out^
+
+
+def _bytes(src: Int, at: Int, n: Int, borrow: Bool) -> List[UInt8]:
+    """`n` bytes at `src + at`: borrowed in place, or copied."""
+    if borrow and n > 0 and src != 0:
+        return borrowed_list[UInt8](src + at, n)
+    return _copy_bytes(src, at, n)
+
+
+def _count_nulls(bitmap: Span[UInt8, _], n: Int) -> Int:
+    """Zeros among the first `n` bits, ignoring whatever the tail byte holds
+    past them (a borrowed bitmap's tail is the producer's)."""
+    var whole = n // 8
+    var ones = 0
+    var p = bitmap.unsafe_ptr()
+    var k = 0
+    while k + 8 <= whole:
+        ones += Int(
+            pop_count(
+                p.unsafe_bitcast[UInt64]().unsafe_load[alignment=1](k // 8)
+            )
+        )
+        k += 8
+    while k < whole:
+        ones += Int(pop_count(p[unsafe_offset=k]))
+        k += 1
+    var tail = n % 8
+    if tail:
+        ones += Int(pop_count(p[unsafe_offset=whole] & UInt8((1 << tail) - 1)))
+    return n - ones
 
 
 def _copy_bits(src: Int, bit_off: Int, n: Int, mut nulls: Int) -> List[UInt8]:
@@ -542,17 +576,21 @@ def _copy_bits(src: Int, bit_off: Int, n: Int, mut nulls: Int) -> List[UInt8]:
 # ── the import walk ────────────────────────────────────────────────────────
 
 
+@always_inline
 def _offset_at(buf: Int, i: Int, wide: Bool) -> Int:
-    var p = _u8(buf)
+    # Native-endian like every Arrow buffer; unaligned because nothing in the
+    # interface promises alignment.
     if wide:
-        var u = UInt64(0)
-        for k in range(8):
-            u |= UInt64(p[unsafe_offset=i * 8 + k]) << UInt64(8 * k)
-        return Int(Int64(u))
-    var v = UInt32(0)
-    for k in range(4):
-        v |= UInt32(p[unsafe_offset=i * 4 + k]) << UInt32(8 * k)
-    return Int(Int32(v))
+        return Int(
+            Pointer[Int64, ImmUntrackedOrigin](
+                unsafe_from_address=buf
+            ).unsafe_load[alignment=1](i)
+        )
+    return Int(
+        Pointer[Int32, ImmUntrackedOrigin](unsafe_from_address=buf).unsafe_load[
+            alignment=1
+        ](i)
+    )
 
 
 def _check(cond: Bool, message: StringSlice) raises:
@@ -567,8 +605,16 @@ def _import_node(
     rel_start: Int,
     count: Int,
     depth: Int,
+    owner: Optional[ArcPointer[ForeignBuffers]],
 ) raises -> Int:
-    """Copy one foreign array — and everything under it — into `arena`.
+    """Read one foreign array — and everything under it — into `arena`.
+
+    With an `owner`, buffers are borrowed where `ArrayData` can describe them
+    in place, and each node that borrows keeps `owner` alive; without one,
+    every buffer is copied. What is copied even with an owner: a validity
+    bitmap or bool values starting mid-byte, and offsets that do not start
+    at zero or are misaligned (they are rebased; the values they index are
+    still borrowed).
 
     `rel_start` and `count` are the *logical* window wanted out of this array,
     on top of the array's own `offset`. That parameter is what makes slices
@@ -649,6 +695,8 @@ def _import_node(
     var offsets = List[Int32]()
     var large_offsets = List[Int64]()
     var values = List[UInt8]()
+    var borrow = Bool(owner)
+    var borrowed = False
 
     var is_var_binary = (
         type.id == AT_UTF8
@@ -673,22 +721,39 @@ def _import_node(
         var first = _offset_at(obuf, phys, wide)
         _check(first >= 0, "negative first offset")
         var prev = first
+        var monotonic = True
         for i in range(count + 1):
             var v = _offset_at(obuf, phys + i, wide)
-            _check(v >= prev, "offsets are not monotonically increasing")
+            monotonic = monotonic and v >= prev
             prev = v
-            if wide:
-                large_offsets.append(Int64(v - first))
-            else:
-                offsets.append(Int32(v - first))
+        _check(monotonic, "offsets are not monotonically increasing")
         var span = prev - first
+        var owidth = 8 if wide else 4
+        var oaddr = obuf + phys * owidth
+        if borrow and first == 0 and oaddr % owidth == 0:
+            if wide:
+                large_offsets = borrowed_list[Int64](oaddr, count + 1)
+            else:
+                offsets = borrowed_list[Int32](oaddr, count + 1)
+            borrowed = True
+        elif wide:
+            large_offsets.reserve(count + 1)
+            for i in range(count + 1):
+                large_offsets.append(
+                    Int64(_offset_at(obuf, phys + i, True) - first)
+                )
+        else:
+            offsets.reserve(count + 1)
+            for i in range(count + 1):
+                offsets.append(Int32(_offset_at(obuf, phys + i, False) - first))
         if is_var_binary:
             var dbuf = _offset_at(bufs, 2, True)
             _check(
                 dbuf != 0 or span == 0,
                 "a variable-length array with a NULL data buffer",
             )
-            values = _copy_bytes(dbuf, first, span)
+            values = _bytes(dbuf, first, span, borrow)
+            borrowed = borrowed or (borrow and span > 0)
         else:
             var child_a = _offset_at(arr.children, 0, True)
             var child_s = _offset_at(sch.children, 0, True)
@@ -701,7 +766,9 @@ def _import_node(
                 ),
             )
             kids.append(
-                _import_node(arena, child_a, child_s, first, span, depth + 1)
+                _import_node(
+                    arena, child_a, child_s, first, span, depth + 1, owner
+                )
             )
     elif type.id == AT_STRUCT:
         for k in range(Int(arr.n_children)):
@@ -719,7 +786,9 @@ def _import_node(
                 ),
             )
             kids.append(
-                _import_node(arena, child_a, child_s, phys, count, depth + 1)
+                _import_node(
+                    arena, child_a, child_s, phys, count, depth + 1, owner
+                )
             )
     elif type.id != AT_NULL:
         var width = type.fixed_width()
@@ -734,7 +803,8 @@ def _import_node(
             _check(
                 vbuf != 0 or count == 0, "a primitive array with NULL values"
             )
-            values = _copy_bytes(vbuf, phys * width, count * width)
+            values = _bytes(vbuf, phys * width, count * width, borrow)
+            borrowed = borrowed or (borrow and count > 0)
 
     var node = ArrayData(type^, _cstring(sch.name))
     node.nullable = (sch.flags & ARROW_FLAG_NULLABLE) != 0
@@ -745,10 +815,20 @@ def _import_node(
         # A null array carries no buffers at all; every element is null by
         # construction, and that is what `null_count` has to say.
         node.null_count = count
+    elif arr.null_count == 0 or buf0 == 0 or count == 0:
+        # The interface lets a producer omit the bitmap, or say there is
+        # nothing in it, by `null_count == 0`; either way no element is null.
+        node.null_count = 0
+    elif borrow and phys % 8 == 0:
+        node.validity = borrowed_list[UInt8](buf0 + phys // 8, (count + 7) // 8)
+        node.null_count = _count_nulls(Span(node.validity), count)
+        borrowed = True
     else:
         var nulls = 0
         node.validity = _copy_bits(buf0, phys, count, nulls)
         node.null_count = nulls
+    if borrowed:
+        node.foreign = owner.copy()
     node.offsets = offsets^
     node.large_offsets = large_offsets^
     node.values = values^
@@ -763,9 +843,18 @@ def import_c(mut arena: ArrayArena, array: Int, schema: Int) raises -> Int:
     Borrowing: the pair is read, never released. The caller owns it — see
     `ImportedArray` for the owning form.
     """
+    return _import_into(arena, array, schema, None)
+
+
+def _import_into(
+    mut arena: ArrayArena,
+    array: Int,
+    schema: Int,
+    owner: Optional[ArcPointer[ForeignBuffers]],
+) raises -> Int:
     _check(array != 0 and schema != 0, "NULL ArrowArray/ArrowSchema")
     var length = Int(_c_array(array)[].length)
-    return _import_node(arena, array, schema, 0, length, 0)
+    return _import_node(arena, array, schema, 0, length, 0, owner)
 
 
 def import_batch_c(array: Int, schema: Int) raises -> RecordBatch:
@@ -780,9 +869,15 @@ def import_batch_c(array: Int, schema: Int) raises -> RecordBatch:
     `RecordBatch` is a list of columns and not an array; that raises rather
     than dropping the row-level nulls on the floor.
     """
+    return _import_batch(array, schema, None)
+
+
+def _import_batch(
+    array: Int, schema: Int, owner: Optional[ArcPointer[ForeignBuffers]]
+) raises -> RecordBatch:
     var batch = RecordBatch()
     var arena = ArrayArena()
-    var root = import_c(arena, array, schema)
+    var root = _import_into(arena, array, schema, owner)
     if arena.nodes[root].type.id == AT_STRUCT:
         _check(
             arena.nodes[root].null_count == 0,
@@ -811,6 +906,11 @@ struct ImportedArray(Movable):
     it will call the root release callbacks exactly once, on `release()` or at
     destruction. The addresses stay valid afterwards, but their contents do
     not, so import before releasing.
+
+    `into_batch` and `into_arena` import **without copying**: the result's
+    buffers point into the producer's memory and the array's release moves
+    into them, to run once the last array that borrows from it is destroyed.
+    The schema is released straight away (names and types are copied).
     """
 
     var array: Int
@@ -829,11 +929,39 @@ struct ImportedArray(Movable):
         self.schema = move.schema
         self._owned = move._owned
 
-    def into_arena(self, mut arena: ArrayArena) raises -> Int:
-        return import_c(arena, self.array, self.schema)
+    def _take_release(deinit self) raises -> ArcPointer[ForeignBuffers]:
+        """The array's release, moved into a shared owner; schema released.
 
-    def into_batch(self) raises -> RecordBatch:
-        return import_batch_c(self.array, self.schema)
+        The owner exists before any import step can raise, so an import that
+        fails still releases the array exactly once, when it is dropped.
+        """
+        _check(self._owned, "ImportedArray was already released")
+        _check(self.array != 0, "NULL ArrowArray")
+        return ArcPointer(ForeignBuffers(self.array, False))
+
+    def into_arena(deinit self, mut arena: ArrayArena) raises -> Int:
+        """Import into `arena` without copying; see the type's docstring."""
+        var schema = self.schema
+        var owner = self^._take_release()
+        try:
+            var root = _import_into(arena, owner[].array, schema, owner)
+            release_c_schema(schema)
+            return root
+        except e:
+            release_c_schema(schema)
+            raise e
+
+    def into_batch(deinit self) raises -> RecordBatch:
+        """Import as a `RecordBatch` without copying."""
+        var schema = self.schema
+        var owner = self^._take_release()
+        try:
+            var batch = _import_batch(owner[].array, schema, owner)
+            release_c_schema(schema)
+            return batch^
+        except e:
+            release_c_schema(schema)
+            raise e
 
     def release(mut self):
         if not self._owned:
@@ -889,9 +1017,10 @@ struct ImportedStream(Movable):
     Ownership runs three ways and all three are ours. The stream is released
     when this object dies. The schema is moved out of `get_schema` into
     storage this object allocates, and released with it. Each array `get_next`
-    moves into us is released as soon as its batch has been copied, which is
-    what keeps a long scan to one batch of producer memory at a time rather
-    than the whole stream.
+    moves into us is imported **without copying**: its batch's buffers point
+    into the producer's memory, and the array is released once the last array
+    of that batch is destroyed. A scan therefore holds as much producer memory
+    as the batches it keeps.
     """
 
     var stream: Int
@@ -985,17 +1114,13 @@ struct ImportedStream(Movable):
             _free(storage)
             self._done = True
             return None
-        # `owned` releases the array whatever happens next, including a raise
-        # out of the import, so a malformed batch does not also leak one.
-        var owned = ImportedArray(storage, 0)
+        # The owner releases the array and frees `storage` when the batch's
+        # last array dies — or right here, if the import raises.
+        var owner = ArcPointer(ForeignBuffers(storage, True))
         try:
-            var batch = import_batch_c(storage, self._schema)
-            owned.release()
-            _free(storage)
+            var batch = _import_batch(storage, self._schema, owner)
             return Optional[RecordBatch](batch^)
         except e:
-            owned.release()
-            _free(storage)
             self._done = True
             raise e
 

@@ -253,6 +253,62 @@ for name, arr, want in SLICES:
             want,
         )
 
+# ── field ids ──────────────────────────────────────────────────────────────
+#
+# `PARQUET:field_id` on every nested field: struct children, a list element,
+# and a map's key and value. pyarrow's `equals` ignores field metadata, so the
+# ids are compared field by field.
+
+
+def fid(n):
+    return {b"PARQUET:field_id": str(n).encode()}
+
+
+def field_ids(t, out):
+    """Every nested field's id, in pre-order."""
+    for i in range(t.num_fields):
+        f = t.field(i)
+        out.append((f.name, (f.metadata or {}).get(b"PARQUET:field_id")))
+        field_ids(f.type, out)
+    return out
+
+
+ids_type = pa.struct([
+    pa.field("id", pa.int64(), metadata=fid(1)),
+    pa.field(
+        "tags",
+        pa.list_(pa.field("element", pa.string(), metadata=fid(3))),
+        metadata=fid(2),
+    ),
+    pa.field(
+        "attrs",
+        pa.map_(
+            pa.field("key", pa.string(), nullable=False, metadata=fid(5)),
+            pa.field("value", pa.int32(), metadata=fid(6)),
+        ),
+        metadata=fid(4),
+    ),
+])
+ids_arr = pa.array(
+    [
+        {"id": 1, "tags": ["a", "b"], "attrs": [("x", 1)]},
+        {"id": 2, "tags": [], "attrs": []},
+    ],
+    ids_type,
+)
+got = roundtrip(ids_arr)
+want_ids = field_ids(ids_arr.type, [])
+if got is None:
+    failures.append("field ids: roundtrip returned an error")
+elif field_ids(got.type, []) != want_ids:
+    failures.append(
+        f"field ids: {field_ids(got.type, [])} != {want_ids}"
+    )
+else:
+    checked += 1
+del got
+gc.collect()
+
 # ── the stream ─────────────────────────────────────────────────────────────
 
 schema = pa.schema([("a", pa.int64()), ("b", pa.string())])
