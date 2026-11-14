@@ -22,7 +22,8 @@ them:
 | struct | validity + N children |
 """
 
-from std.memory import bitcast
+from std.memory import ArcPointer, bitcast
+from std.os import abort
 
 # ── Arrow type ids ─────────────────────────────────────────────────────────
 
@@ -331,6 +332,125 @@ def bit_set(mut bitmap: List[UInt8], i: Int, value: Bool):
         bitmap[byte] &= ~(UInt8(1) << UInt8(i % 8))
 
 
+# ── foreign buffers ────────────────────────────────────────────────────────
+
+
+comptime _ReleaseFn = def(Int) thin abi("C") -> None
+"""An `ArrowArray`'s `release`, called with the struct's address."""
+
+
+struct ForeignBuffers(Movable):
+    """Producer memory that imported `ArrayData` buffers point into.
+
+    `arrow_mlake.carrow_import` creates one per imported root `ArrowArray`
+    and every node whose buffers borrow from that array holds an
+    `ArcPointer` to it, so the producer's `release` runs exactly once, when
+    the last such node is destroyed. `storage` is the struct's own
+    allocation when this library made it (a stream's `get_next` target) and
+    is freed after the release.
+    """
+
+    var array: Int
+    """Address of the root `ArrowArray` this owns."""
+    var free_storage: Bool
+
+    def __init__(out self, array: Int, free_storage: Bool):
+        self.array = array
+        self.free_storage = free_storage
+
+    def __init__(out self, *, deinit move: Self):
+        self.array = move.array
+        self.free_storage = move.free_storage
+
+    def __deinit__(deinit self):
+        if self.array == 0:
+            return
+        var rel = Pointer[Int, MutUntrackedOrigin](
+            unsafe_from_address=self.array + 64
+        )
+        if rel[] != 0:
+            var slot = Pointer[_ReleaseFn, MutUntrackedOrigin](
+                unsafe_from_address=self.array + 64
+            )
+            slot[](self.array)
+        if self.free_storage:
+            Pointer[UInt64, MutUntrackedOrigin](
+                unsafe_from_address=self.array
+            ).unsafe_free()
+
+
+def _list_layout[T: Copyable]() -> Tuple[Int, Int]:
+    """Byte offsets of a `List[T]`'s data pointer and length.
+
+    `List` keeps these private and has moved them between releases: 1.2 has
+    `_data`, `_len`, `_capacity`; later nightlies hold the pointer and the
+    capacity in an `_storage: Allocation`. Both keep the length in `_len` and
+    free nothing at capacity 0. Read by reflection so that either compiles;
+    `(-1, -1)` for a layout this does not know, and `borrowed_list` copies.
+    """
+    comptime L = List[T]
+    comptime names = reflect[L].field_names()
+    comptime for i in range(reflect[L].field_count()):
+        comptime if names[i] == "_data":
+            return (
+                reflect[L].field_offset[name="_data"](),
+                reflect[L].field_offset[name="_len"](),
+            )
+        elif names[i] == "_storage":
+            comptime S = reflect[L].field["_storage"].T
+            comptime A = reflect[S].field["_alloc"].T
+            return (
+                reflect[L].field_offset[name="_storage"]()
+                + reflect[S].field_offset[name="_alloc"]()
+                + reflect[A].field_offset[name="_ptr"](),
+                reflect[L].field_offset[name="_len"](),
+            )
+    return (-1, -1)
+
+
+def borrowed_list[T: Copyable](addr: Int, count: Int) -> List[T]:
+    """A `List` whose elements are `count` values at `addr`, not owned.
+
+    The list has capacity 0, which is what makes it safe to drop: `List`
+    frees its storage only when it has capacity, and the first push, resize
+    or reserve moves the elements into a fresh allocation of its own (the
+    foreign memory is left as it was). A copy is an ordinary owned list.
+    Writing an element in place writes the producer's memory, so imported
+    arrays are read-only. On a `List` layout it does not recognise, this
+    copies instead.
+    """
+    var out = List[T]()
+    if count <= 0:
+        return out^
+    comptime at = _list_layout[T]()
+    comptime if at[0] < 0:
+        out.reserve(count)
+        var src = Pointer[T, ImmUntrackedOrigin](unsafe_from_address=addr)
+        for i in range(count):
+            out.append(src[unsafe_offset=i].copy())
+        return out^
+    else:
+        var base = Int(Pointer(to=out))
+        Pointer[Int, MutUntrackedOrigin](
+            unsafe_from_address=base + at[0]
+        )[] = addr
+        Pointer[Int, MutUntrackedOrigin](
+            unsafe_from_address=base + at[1]
+        )[] = count
+        if (
+            Int(out.unsafe_ptr()) != addr
+            or len(out) != count
+            or out.capacity() != 0
+        ):
+            abort("arrow_mlake: borrowed_list does not match List's layout")
+        return out^
+
+
+def is_borrowed(list: List[_]) -> Bool:
+    """True for a `borrowed_list`: elements present, no storage owned."""
+    return len(list) > 0 and list.capacity() == 0
+
+
 # ── array data ─────────────────────────────────────────────────────────────
 
 
@@ -348,6 +468,14 @@ struct ArrayData(Copyable, Movable):
     var large_offsets: List[Int64]
     var values: List[UInt8]
     var children: List[Int]
+    var foreign: Optional[ArcPointer[ForeignBuffers]]
+    """Set on an array imported without copying: the producer memory its
+    buffers point into, released when the last array holding it dies.
+
+    The buffers are valid only while this array (or another holding the same
+    `foreign`) is alive. Moving one out (`a.values^`, `swap`) and keeping it
+    past the array is a use-after-free; `a.copy()` or `own_buffers()` first.
+    """
 
     def __init__(out self, var type: ArrowType, var name: String):
         self.type = type^
@@ -361,6 +489,7 @@ struct ArrayData(Copyable, Movable):
         self.large_offsets = List[Int64]()
         self.values = List[UInt8]()
         self.children = List[Int]()
+        self.foreign = None
 
     def __init__(out self):
         self = ArrayData(ArrowType(AT_NULL), String())
@@ -377,6 +506,8 @@ struct ArrayData(Copyable, Movable):
         self.large_offsets = copy.large_offsets.copy()
         self.values = copy.values.copy()
         self.children = copy.children.copy()
+        # Copying a borrowed list allocates, so a copy owns everything.
+        self.foreign = None
 
     def __init__(out self, *, deinit move: Self):
         self.type = move.type^
@@ -390,6 +521,17 @@ struct ArrayData(Copyable, Movable):
         self.large_offsets = move.large_offsets^
         self.values = move.values^
         self.children = move.children^
+        self.foreign = move.foreign^
+
+    def own_buffers(mut self):
+        """Copy any borrowed buffer into memory of this array's own."""
+        if not self.foreign:
+            return
+        self.validity = self.validity.copy()
+        self.offsets = self.offsets.copy()
+        self.large_offsets = self.large_offsets.copy()
+        self.values = self.values.copy()
+        self.foreign = None
 
     def is_valid(self, i: Int) -> Bool:
         return bit_get(Span(self.validity), i)

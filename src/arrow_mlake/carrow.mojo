@@ -250,12 +250,22 @@ struct _Block(Movable):
 
 
 def _metadata_bytes(a: ArrayData) -> List[UInt8]:
-    """Arrow's C metadata encoding: `n`, then (`len`, key, `len`, value)*."""
+    """Arrow's C metadata encoding: `n`, then (`len`, key, `len`, value)*.
+
+    Carries `ARROW:extension:name` and `PARQUET:field_id` (when the field has
+    an id), which is where pyarrow and the importer look for them.
+    """
     var out = List[UInt8]()
-    if not a.type.extension:
+    var keys = List[String]()
+    var vals = List[String]()
+    if a.type.extension:
+        keys.append(String("ARROW:extension:name"))
+        vals.append(a.type.extension.copy())
+    if a.field_id >= 0:
+        keys.append(String("PARQUET:field_id"))
+        vals.append(String(a.field_id))
+    if not keys:
         return out^
-    var keys: List[String] = [String("ARROW:extension:name")]
-    var vals: List[String] = [a.type.extension.copy()]
     _put_i32(out, Int32(len(keys)))
     for i in range(len(keys)):
         _put_i32(out, Int32(keys[i].byte_length()))
