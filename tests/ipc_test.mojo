@@ -11,10 +11,8 @@ from std.testing import TestSuite, assert_equal, assert_raises, assert_true
 from build_arrays import SAMPLE_ROWS, int64_array, sample_arena, utf8_array
 from carrow_check import assert_preorder, assert_same_array
 from arrow_mlake import (
-    AT_INT64,
     LZ4_FRAME,
     ZSTD,
-    ArrayArena,
     IpcCodecs,
     IpcWriter,
     RecordBatch,
