@@ -22,7 +22,7 @@ them:
 | struct | validity + N children |
 """
 
-from std.memory import ArcPointer, bitcast
+from std.memory import ArcPointer
 from std.os import abort
 
 # ── Arrow type ids ─────────────────────────────────────────────────────────

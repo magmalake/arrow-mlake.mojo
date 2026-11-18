@@ -38,13 +38,7 @@ rather than writing something a consumer would misread.
 from memory_region import BumpAllocator, MappedRegion
 
 from arrow_mlake.arrow import (
-    AT_BINARY,
-    AT_BOOL,
-    AT_LARGE_BINARY,
-    AT_LARGE_UTF8,
-    AT_UTF8,
     ArrayArena,
-    ArrayData,
 )
 from arrow_mlake.carrow import (
     _align8,
