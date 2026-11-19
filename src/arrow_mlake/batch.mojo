@@ -236,7 +236,7 @@ def array_str_into(
     for i in range(a.length):
         var lo = Int(a.offsets[i])
         var hi = Int(a.offsets[i + 1])
-        vals.append(String(StringSlice(unsafe_from_utf8=Span(a.values)[lo:hi])))
+        vals.append(String(StringSpan(unsafe_from_utf8=Span(a.values)[lo:hi])))
     _append_validity(a, valid)
 
 

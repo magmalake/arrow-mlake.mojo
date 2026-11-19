@@ -239,7 +239,7 @@ struct _Block(Movable):
     def put_bytes(mut self, data: Span[UInt8, _]) raises -> Int:
         return self.bump.append(data)
 
-    def put_cstring(mut self, text: StringSlice) raises -> Int:
+    def put_cstring(mut self, text: StringSpan) raises -> Int:
         var b = text.as_bytes()
         var at = self.take(len(b) + 1)
         var dest = self.bump.span[DType.uint8](at, len(b) + 1)
