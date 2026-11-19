@@ -376,7 +376,7 @@ def test_export_release_is_idempotent() raises:
 # ── the round trip ─────────────────────────────────────────────────────────
 
 
-def _round_trip(arena: ArrayArena, root: Int, label: StringSlice) raises:
+def _round_trip(arena: ArrayArena, root: Int, label: StringSpan) raises:
     """Export one array, import it back, and compare both halves.
 
     Values *and* layout: `assert_same_array` walks the two trees together, and
@@ -1056,7 +1056,7 @@ def test_export_shared_lands_where_the_manifest_says() raises:
 
     # Values buffer: four int64s. The only buffer with a real offset here,
     # because an all-valid column publishes `null` for its validity bitmap.
-    var head = manifest.find('"offset":')
+    var head = manifest.find('"offset":').or_else(-1)
     assert_true(head >= 0)
     # The first (and only) buffer offset in the manifest is the values buffer.
     var bytes = manifest.as_bytes()

@@ -192,7 +192,7 @@ def release_c_schema(addr: Int):
 # ── format strings ─────────────────────────────────────────────────────────
 
 
-def _unsupported(fmt: StringSlice, why: StringSlice) raises -> ArrowType:
+def _unsupported(fmt: StringSpan, why: StringSpan) raises -> ArrowType:
     raise Error(
         String(
             "arrow_mlake.carrow: ",
@@ -204,7 +204,7 @@ def _unsupported(fmt: StringSlice, why: StringSlice) raises -> ArrowType:
     )
 
 
-def _digits(b: Span[Int, _], mut i: Int, fmt: StringSlice) raises -> Int:
+def _digits(b: Span[Int, _], mut i: Int, fmt: StringSpan) raises -> Int:
     var start = i
     var v = 0
     while i < len(b) and b[i] >= 0x30 and b[i] <= 0x39:
@@ -215,7 +215,7 @@ def _digits(b: Span[Int, _], mut i: Int, fmt: StringSlice) raises -> Int:
     return v
 
 
-def _time_unit(c: Int, fmt: StringSlice) raises -> Int:
+def _time_unit(c: Int, fmt: StringSpan) raises -> Int:
     if c == ord("s"):
         return TU_SECOND
     if c == ord("m"):
@@ -228,7 +228,7 @@ def _time_unit(c: Int, fmt: StringSlice) raises -> Int:
     return TU_MICRO
 
 
-def parse_format(fmt: StringSlice) raises -> ArrowType:
+def parse_format(fmt: StringSpan) raises -> ArrowType:
     """One Arrow C Data Interface format string as an `ArrowType`.
 
     Every string this library can *write* round-trips, plus the temporal and
@@ -352,7 +352,7 @@ def parse_format(fmt: StringSlice) raises -> ArrowType:
                 return _unsupported(fmt, "malformed timestamp format")
             var tz = String()
             if n > 4:
-                tz = String(StringSlice(unsafe_from_utf8=raw[4:]))
+                tz = String(StringSpan(unsafe_from_utf8=raw[4:]))
             var t = ArrowType(AT_TIMESTAMP)
             t.unit = unit
             t.tz = tz^
@@ -439,9 +439,9 @@ def extension_name(metadata: Int) raises -> String:
         var val_at = at + 4
         at = val_at + vlen
         var key = _copy_bytes(metadata + key_at, 0, klen)
-        if StringSlice(unsafe_from_utf8=Span(key)) == "ARROW:extension:name":
+        if StringSpan(unsafe_from_utf8=Span(key)) == "ARROW:extension:name":
             var val = _copy_bytes(metadata + val_at, 0, vlen)
-            return String(StringSlice(unsafe_from_utf8=Span(val)))
+            return String(StringSpan(unsafe_from_utf8=Span(val)))
     return String()
 
 
@@ -471,7 +471,7 @@ def parquet_field_id(metadata: Int) raises -> Int32:
         var val_at = at + 4
         at = val_at + vlen
         var key = _copy_bytes(metadata + key_at, 0, klen)
-        if StringSlice(unsafe_from_utf8=Span(key)) == "PARQUET:field_id":
+        if StringSpan(unsafe_from_utf8=Span(key)) == "PARQUET:field_id":
             var val = _copy_bytes(metadata + val_at, 0, vlen)
             var v = 0
             var neg = False
@@ -593,7 +593,7 @@ def _offset_at(buf: Int, i: Int, wide: Bool) -> Int:
     )
 
 
-def _check(cond: Bool, message: StringSlice) raises:
+def _check(cond: Bool, message: StringSpan) raises:
     if not cond:
         raise Error(String("arrow_mlake.carrow: ", message))
 

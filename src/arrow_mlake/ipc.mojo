@@ -923,7 +923,7 @@ def _next_buffer(
 
 
 def _copy_bytes(
-    body: Span[UInt8, _], buf: Tuple[Int, Int], need: Int, what: StringSlice
+    body: Span[UInt8, _], buf: Tuple[Int, Int], need: Int, what: StringSpan
 ) raises -> List[UInt8]:
     if buf[1] < need:
         raise Error(

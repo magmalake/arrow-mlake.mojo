@@ -206,9 +206,8 @@ flags, nothing else to check out.
 ## Test
 
 ```sh
-pixi run -e stable test       # stable Mojo 1.2.0
-pixi run -e default test      # nightly
-pixi run -e default lint      # mojolint --lsp
+pixi run test                 # Mojo 1.3.0.dev2026111805
+pixi run lint                 # mojolint --lsp
 pixi run verify-c-import      # the pyarrow gate; needs `uv`
 pixi run verify-ipc           # pyarrow and IPC streams, both ways; needs `uv`
 ```

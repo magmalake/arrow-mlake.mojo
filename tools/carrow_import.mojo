@@ -27,7 +27,7 @@ from arrow_mlake import (
 
 
 def _write_out(
-    text: StringSlice, buf: Pointer[UInt8, MutUntrackedOrigin], buflen: Int
+    text: StringSpan, buf: Pointer[UInt8, MutUntrackedOrigin], buflen: Int
 ):
     """Copy `text` into the caller's buffer, NUL-terminated and truncated."""
     var b = text.as_bytes()

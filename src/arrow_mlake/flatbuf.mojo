@@ -414,7 +414,7 @@ struct FlatReader(Movable):
         var n = self.u32(p)
         self._check(p + 4, n)
         return String(
-            StringSlice(unsafe_from_utf8=Span(self.buf)[p + 4 : p + 4 + n])
+            StringSpan(unsafe_from_utf8=Span(self.buf)[p + 4 : p + 4 + n])
         )
 
     def vector_len(self, vector: Int) raises -> Int:
