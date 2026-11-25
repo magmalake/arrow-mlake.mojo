@@ -2,7 +2,7 @@
 authors = ["Marius S <39998+winding-lines@users.noreply.github.com>"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 name = "arrow-mlake.mojo"
-version = "0.4.0"
+version = "0.4.1"
 description = "The Apache Arrow memory layout, the C Data Interface and IPC streams, in pure Mojo — a stopgap until marrow builds on Mojo 1.x."
 preview = ["pixi-build"]
 platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
@@ -56,7 +56,7 @@ verify-ipc = { cmd = "bash tools/verify_ipc.sh", depends-on = ["ipc-roundtrip"] 
 # `from arrow_mlake import …`.
 [package]
 name = "arrow-mlake-mojo"
-version = "0.4.0"
+version = "0.4.1"
 
 [package.build]
 backend = { name = "pixi-build-mojo", version = "0.*" }
@@ -71,14 +71,14 @@ mojo-compiler = "==1.3.0.dev2026112505"
 # The export block is a `Bump` over a `Region` now. Declared here as well as on
 # the include path, because a consumer taking the built package needs the
 # tin's .mojoc on its own import path.
-memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "fa50e3dcb31c01d061463c8bafa48a02bdd9980a" }
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "31bda02fa429496e064d764d2d4039160f77e1af" }
 
 [package.build-dependencies]
 mojo-compiler = "==1.3.0.dev2026112505"
 
 [package.run-dependencies]
 mojo-compiler = "==1.3.0.dev2026112505"
-memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "fa50e3dcb31c01d061463c8bafa48a02bdd9980a" }
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "31bda02fa429496e064d764d2d4039160f77e1af" }
 
 [target.osx-arm64.activation.env]
 SHLIB_EXT = ".dylib"
@@ -98,4 +98,4 @@ mojo-compiler = "==1.3.0.dev2026112505"
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
-lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "b73d03bbfa458417cf9eed56f4e3b7a092d73969" }
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "503a9c6d8fc5114f24a9e3355680a0024167bdb3" }
