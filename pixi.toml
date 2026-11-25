@@ -67,18 +67,18 @@ name = "arrow_mlake"
 extra-args = ["-I", "$PREFIX/lib/mojo"]
 
 [package.host-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 # The export block is a `Bump` over a `Region` now. Declared here as well as on
 # the include path, because a consumer taking the built package needs the
 # tin's .mojoc on its own import path.
-memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "d8256141cedc5e35e1a69f9a5eb2faae6116fe3a" }
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "fa50e3dcb31c01d061463c8bafa48a02bdd9980a" }
 
 [package.build-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 
 [package.run-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
-memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "d8256141cedc5e35e1a69f9a5eb2faae6116fe3a" }
+mojo-compiler = "==1.3.0.dev2026112505"
+memory-region-mojo = { git = "https://github.com/magmalake/memory-region.mojo", rev = "fa50e3dcb31c01d061463c8bafa48a02bdd9980a" }
 
 [target.osx-arm64.activation.env]
 SHLIB_EXT = ".dylib"
@@ -94,8 +94,8 @@ SHLIB_EXT = ".so"
 # version that built it, so the pin is exact here and in [package] above, and
 # it moves across all magmalake tins together.
 [dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
-lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "81cac02a78a8cfd48a9807dda68f8d7d2f013791" }
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "b73d03bbfa458417cf9eed56f4e3b7a092d73969" }
