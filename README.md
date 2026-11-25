@@ -1,6 +1,6 @@
 # arrow-mlake.mojo
 
-[![mojoshelf](https://mojoshelf.org/badge/arrow-mlake-mojo.svg)](https://mojoshelf.org/tins/arrow-mlake-mojo) [![mojo nightly](https://mojoshelf.org/badge/arrow-mlake-mojo/nightly.svg)](https://mojoshelf.org/tins/arrow-mlake-mojo)
+[![mojoshelf](https://mojoshelf.org/badge/arrow-mlake-mojo.svg)](https://mojoshelf.org/tins/arrow-mlake-mojo) [![mojo nightly](https://mojoshelf.org/badge/arrow-mlake-mojo/nightly.svg)](https://mojoshelf.org/tins/arrow-mlake-mojo) [![Used by](https://mojourney.dev/badge/magmalake/arrow-mlake.mojo/used-by.svg)](https://mojourney.dev/repos/magmalake/arrow-mlake.mojo#used-by) [![Mojo version](https://mojourney.dev/badge/magmalake/arrow-mlake.mojo/mojo.svg)](https://mojourney.dev/repos/magmalake/arrow-mlake.mojo)
 
 [![CI](https://github.com/magmalake/arrow-mlake.mojo/actions/workflows/ci.yml/badge.svg)](https://github.com/magmalake/arrow-mlake.mojo/actions/workflows/ci.yml)
 
